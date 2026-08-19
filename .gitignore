@@ -1,0 +1,24 @@
+# dependencies
+node_modules/
+
+# runtime data — contains the live WhatsApp session, encrypted config,
+# the member/message index, and rotated logs. NEVER commit.
+data/
+
+# secrets — MASTER_KEY decrypts the config; must never leave the server
+.env
+.env.*
+
+# network filter CA certs (if any are dropped in)
+certs/*.crt
+certs/*.pem
+
+# logs / scratch
+*.log
+*.tmp
+
+# generated from whatsapp-bot.service.template by install.sh
+whatsapp-bot.service
+
+# Windows "downloaded from the internet" markers
+*:Zone.Identifier

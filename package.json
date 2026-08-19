@@ -1,0 +1,28 @@
+{
+  "name": "whatsapp-group-bot",
+  "version": "1.0.0",
+  "description": "Pluggable WhatsApp bot for managing groups, with a web control panel.",
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "./start.sh",
+    "dev": "node --watch src/index.js",
+    "test": "node test/semaphore.test.mjs && node test/queue.test.mjs && node test/auth.test.mjs && node test/logging.test.mjs && node test/lockdown.test.mjs && node test/rules.test.mjs && node test/rules-groups.test.mjs && node test/enforcement.test.mjs && node test/admin-commands.test.mjs && node test/notify.test.mjs && node test/group-mention.test.mjs && node test/groupadmin.test.mjs && node test/members-roster.test.mjs && node test/member-activity.test.mjs && node test/ban-wipe.test.mjs && node test/self-identity.test.mjs && node test/appstate.test.mjs && node test/webui-lint.test.mjs && node test/portal-search.test.mjs"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "express-session": "^1.18.1",
+    "nodemailer": "^9.0.5",
+    "pino": "^9.5.0",
+    "qrcode": "^1.5.4"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "linkedom": "^0.18.13"
+  }
+}

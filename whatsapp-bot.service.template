@@ -1,0 +1,40 @@
+# Template. `./install.sh` substitutes __APP_DIR__ and __APP_USER__ and writes
+# whatsapp-bot.service next to it; copy that into /etc/systemd/system/.
+[Unit]
+Description=WhatsApp Group Bot
+Documentation=file:__APP_DIR__/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__APP_USER__
+Group=__APP_USER__
+WorkingDirectory=__APP_DIR__
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=__APP_DIR__/start.sh
+Restart=on-failure
+RestartSec=10
+
+# Background service; yield to interactive work on the box.
+Nice=10
+CPUWeight=50
+
+# Cap the app so a leak cannot take the whole system down with it. Raise these
+# if you run large groups or chatty plugins.
+MemoryMax=700M
+MemoryHigh=600M
+
+# Basic hardening. The app only needs its own directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=__APP_DIR__/data
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=whatsapp-bot
+
+[Install]
+WantedBy=multi-user.target

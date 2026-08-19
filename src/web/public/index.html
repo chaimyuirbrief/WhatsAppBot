@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>WhatsApp Bot Control</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- ============ GATE: setup / login ============ -->
+<div id="gate" class="gate hidden">
+  <div class="gate-card">
+    <div class="gate-logo">🤖</div>
+    <h1 id="gate-title">Sign in</h1>
+    <p id="gate-sub" class="muted">Enter your control panel password.</p>
+    <form id="gate-form" autocomplete="off">
+      <input type="text" id="gate-user" placeholder="Username" autocomplete="username">
+      <input type="password" id="gate-pw" placeholder="Password" autocomplete="current-password" required>
+      <input type="password" id="gate-pw2" class="hidden" placeholder="Confirm password" autocomplete="new-password">
+      <button type="submit" class="btn primary block" id="gate-btn">Sign in</button>
+      <div id="gate-err" class="err"></div>
+    </form>
+  </div>
+</div>
+
+<!-- ============ APP ============ -->
+<div id="app" class="hidden">
+  <header class="topbar">
+    <div class="brand"><span class="logo">🤖</span><span>Bot Control</span></div>
+    <div class="searchwrap">
+      <input id="gsearch" placeholder="Search settings, groups, members…  (press /)" autocomplete="off" spellcheck="false">
+      <div id="gsearch-results" class="search-results hidden"></div>
+    </div>
+    <div class="topbar-right">
+      <span id="conn-pill" class="pill">…</span>
+      <span id="who" class="muted small"></span>
+      <button class="btn ghost small" id="btn-logout">Sign out</button>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-tab="dashboard">Dashboard</button>
+    <button class="tab" data-tab="settings">Settings</button>
+    <button class="tab" data-tab="groups">Groups</button>
+    <button class="tab" data-tab="members">Members</button>
+    <button class="tab superadmin-only hidden" data-tab="admins">Admins</button>
+    <button class="tab" data-tab="logs">Logs</button>
+  </nav>
+
+  <div id="jumpnav" class="jumpnav"></div>
+
+  <main>
+    <!-- ---------- DASHBOARD ---------- -->
+    <section class="panel active" id="tab-dashboard">
+      <div class="grid">
+        <div class="card" id="card-conn">
+          <h2>WhatsApp connection</h2>
+          <div id="conn-body">
+            <div class="status-row">
+              <span class="dot" id="conn-dot"></span>
+              <div>
+                <div id="conn-state" class="status-title">Not connected</div>
+                <div id="conn-detail" class="muted small"></div>
+              </div>
+            </div>
+            <div id="link-area"></div>
+            <div class="row gap wrap" style="margin-top:14px">
+              <button class="btn primary" id="btn-start">Link / Connect</button>
+              <button class="btn" id="btn-stop">Disconnect</button>
+              <button class="btn danger" id="btn-wipe">Unlink &amp; wipe session</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" id="card-queue">
+          <h2>Job queue <span id="queue-count" class="badge">0</span></h2>
+          <p class="hint">Background work the plugins hand to the shared queue. Pausing holds new
+          jobs without disconnecting the bot.</p>
+          <div class="row gap" style="margin-bottom:10px">
+            <button class="btn small" id="btn-pause">Pause</button>
+            <button class="btn small" id="btn-resume">Resume</button>
+            <button class="btn small danger" id="btn-clearq">Clear waiting</button>
+          </div>
+          <div id="queue-list" class="list"><div class="empty">Nothing queued.</div></div>
+        </div>
+
+        <div class="card" id="card-dash-log">
+          <h2>Recent activity <a href="#" class="card-link" data-goto="logs">open full log →</a></h2>
+          <pre id="dash-log" class="logbox short"></pre>
+        </div>
+
+        <div class="card">
+          <h2>Outbound connectivity</h2>
+          <p class="hint">Checks the bot can reach WhatsApp, and flags a TLS-intercepting filter
+          in front of it.</p>
+          <div id="conncheck" class="list"><div class="empty">Not checked yet.</div></div>
+          <button class="btn small" id="btn-conncheck" style="margin-top:10px">Run check</button>
+        </div>
+
+        <div class="card">
+          <h2>System</h2>
+          <div id="diag" class="kv"><div class="empty">Loading…</div></div>
+          <button class="btn small" id="btn-diag" style="margin-top:10px">Refresh</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- SETTINGS ---------- -->
+    <section class="panel" id="tab-settings">
+      <div class="settings-actions">
+        <button class="btn primary" id="btn-save">Save settings</button>
+        <span id="save-note" class="muted small"></span>
+      </div>
+
+      <div class="card">
+        <h2>WhatsApp account</h2>
+        <label>Phone number <span class="hint">digits only, with country code — e.g. 15551234567</span>
+          <input id="f-phone" placeholder="15551234567" inputmode="numeric">
+        </label>
+        <label>Link method
+          <select id="f-loginmethod">
+            <option value="pairing">Pairing code — sent to this number (no QR)</option>
+            <option value="qr">QR code — scan from the phone</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" id="f-autoreconnect"> Reconnect automatically if dropped</label>
+        <label class="check"><input type="checkbox" id="f-markonline"> Appear online while running
+          <span class="hint">Leave off to keep your phone's presence untouched.</span>
+        </label>
+        <div class="row gap wrap">
+          <label class="flex1">Min delay between actions (ms)<input id="f-mindelay" type="number" min="0"></label>
+          <label class="flex1">Max delay (ms)<input id="f-maxdelay" type="number" min="0"></label>
+        </div>
+        <p class="hint">Pacing stops the bot flooding your own groups and hammering the connection.</p>
+      </div>
+
+      <div class="card">
+        <h2>Groups</h2>
+        <div class="row gap" style="margin-bottom:10px">
+          <button class="btn small" id="btn-refresh-groups">Refresh group list</button>
+          <span class="muted small" id="groups-note"></span>
+        </div>
+        <label>Moderated groups <span class="hint">auto-moderation only ever acts inside the groups ticked here</span></label>
+        <div id="group-checks" class="group-list"><div class="empty">Connect to load your groups.</div></div>
+      </div>
+
+      <div class="card">
+        <h2>Announcements</h2>
+        <p class="hint">Optional group where the bot posts what happens elsewhere — joins, leaves,
+        removals, admin changes and lock/unlock — as it happens.</p>
+        <label>Announcements group <span class="hint">leave as “none” to switch announcements off</span>
+          <select id="f-ann-group"><option value="">— none —</option></select>
+        </label>
+        <label class="check"><input type="checkbox" id="f-ann-tagactor"> @-mention the person the event is about <span class="hint">only when they're in this group</span></label>
+        <label class="check"><input type="checkbox" id="f-ann-taggroup"> @-mention the group it happened in <span class="hint">same community only</span></label>
+        <label>Never @-tag these numbers <span class="hint">opt-outs — one per line or comma separated; the update is still posted, just without the ping</span>
+          <textarea id="f-ann-notag" rows="2" placeholder="15551234567"></textarea>
+        </label>
+
+        <h3>Which events to post</h3>
+        <div class="check-grid">
+          <label class="check"><input type="checkbox" id="f-ann-ev-join"> Someone joins</label>
+          <label class="check"><input type="checkbox" id="f-ann-ev-leave"> Someone leaves</label>
+          <label class="check"><input type="checkbox" id="f-ann-ev-remove"> Someone is removed</label>
+          <label class="check"><input type="checkbox" id="f-ann-ev-promote"> Made an admin</label>
+          <label class="check"><input type="checkbox" id="f-ann-ev-demote"> Admin removed</label>
+          <label class="check"><input type="checkbox" id="f-ann-ev-lock"> Groups locked</label>
+          <label class="check"><input type="checkbox" id="f-ann-ev-unlock"> Groups unlocked</label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Group rules</h2>
+        <p class="hint">Sent to anyone who asks the bot for them with the command below, in a group
+        or in a PM. WhatsApp formatting: *bold*, _italic_.</p>
+        <label>Command<input id="f-rules-cmd" placeholder="#rules"></label>
+        <label class="check"><input type="checkbox" id="f-rules-delchat"> Clear the PM after answering <span class="hint">keeps the bot's chat list tidy</span></label>
+        <label>Rules text <span class="hint">the master set, used in a PM and in any group with no set of its own</span>
+          <textarea id="f-rules" rows="12" placeholder="(rules)"></textarea>
+        </label>
+
+        <h3>Extra rule sets <span class="hint">each gets its own command</span></h3>
+        <div id="rule-sets" class="list"><div class="empty">No extra rule sets.</div></div>
+        <button class="btn small" id="btn-ruleset-add" style="margin-top:10px">+ Add a rule set</button>
+
+        <h3>Which set each group uses</h3>
+        <div id="rule-assign" class="group-list"><div class="empty">Connect WhatsApp to load groups.</div></div>
+
+        <div class="row gap" style="margin-top:14px">
+          <button class="btn small primary" id="btn-rules-save">Save rules</button>
+          <span id="rules-note" class="muted small"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Control panel</h2>
+        <div class="row gap wrap">
+          <label class="flex1">Port<input id="f-port" type="number"></label>
+          <label class="flex1">Bind address<input id="f-bind" placeholder="0.0.0.0"></label>
+        </div>
+        <p class="hint">Changing port or bind address needs a restart. <strong>0.0.0.0</strong> exposes the panel to your whole LAN — never port-forward it without HTTPS in front.</p>
+        <label>Log level
+          <select id="f-loglevel"><option>debug</option><option>info</option><option>warn</option><option>error</option></select>
+        </label>
+
+        <h3>Job queue</h3>
+        <p class="hint">The shared queue every plugin puts background work on.</p>
+        <div class="row gap wrap">
+          <label class="flex1">Jobs at once<input id="f-queue-concurrency" type="number" min="1"></label>
+          <label class="flex1">Max waiting jobs<input id="f-queue-maxlength" type="number" min="1"></label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Email alerts</h2>
+        <p class="hint">Sends debug logs and error alerts to your inbox. Gmail and Outlook need an
+        <strong>app password</strong> — not your normal password — which requires two-factor to be
+        switched on. Generate one at
+        <span class="mono">myaccount.google.com → Security → App passwords</span>.</p>
+
+        <label class="check"><input type="checkbox" id="f-em-enabled"> Enable email</label>
+
+        <label>Provider
+          <select id="f-em-provider">
+            <option value="gmail">Gmail</option>
+            <option value="outlook">Outlook / Hotmail</option>
+            <option value="yahoo">Yahoo</option>
+            <option value="custom">Custom SMTP</option>
+          </select>
+        </label>
+
+        <div id="em-custom" class="hidden">
+          <div class="row gap wrap">
+            <label class="flex1">SMTP host<input id="f-em-host" placeholder="smtp.example.com"></label>
+            <label style="width:110px">Port<input id="f-em-port" type="number"></label>
+          </div>
+          <label class="check"><input type="checkbox" id="f-em-secure"> Use TLS on connect (port 465)</label>
+        </div>
+
+        <div class="row gap wrap">
+          <label class="flex1">Email address<input id="f-em-user" type="email" placeholder="you@gmail.com" autocomplete="off"></label>
+          <label class="flex1">App password<input id="f-em-pass" type="password" placeholder="not set" autocomplete="new-password"></label>
+        </div>
+        <label>Send alerts to <span class="hint">leave blank to send to yourself</span>
+          <input id="f-em-to" type="email" placeholder="same as above">
+        </label>
+
+        <h3>When to email</h3>
+        <label class="check"><input type="checkbox" id="f-em-onerror"> Email me when an error is logged</label>
+        <label>Quiet period between alerts (minutes) <span class="hint">stops a failing loop flooding your inbox</span>
+          <input id="f-em-throttle" type="number" min="1">
+        </label>
+
+        <div class="row gap wrap" style="margin-top:14px">
+          <button class="btn small" id="btn-em-verify">Check credentials</button>
+          <button class="btn small" id="btn-em-test">Send test email</button>
+          <button class="btn small primary" id="btn-em-sendlog">Email me the log now</button>
+        </div>
+        <div id="em-result" class="small" style="margin-top:8px"></div>
+      </div>
+
+      <div class="card">
+        <h2>My password</h2>
+        <div class="row gap wrap">
+          <label class="flex1">Current<input id="f-pw-cur" type="password" autocomplete="current-password"></label>
+          <label class="flex1">New<input id="f-pw-new" type="password" autocomplete="new-password"></label>
+        </div>
+        <button class="btn small" id="btn-chpw">Update my password</button>
+        <span id="pw-result" class="muted small"></span>
+      </div>
+
+      <div class="card">
+        <h2>Plugins</h2>
+        <p class="hint">Enabled plugins, one per line. Each maps to a folder in <code>src/plugins/</code>.</p>
+        <textarea id="f-plugins" rows="3"></textarea>
+        <div id="plugin-list" class="kv" style="margin-top:12px"></div>
+      </div>
+    </section>
+
+    <!-- ---------- GROUPS ADMIN ---------- -->
+    <section class="panel" id="tab-groups">
+      <div class="card">
+        <h2>Groups <button class="btn small" id="btn-ga-refresh" style="margin-left:auto">Refresh</button></h2>
+        <div id="ga-list" class="list"><div class="empty">Connect WhatsApp to manage groups.</div></div>
+      </div>
+
+      <div class="card hidden" id="ga-detail">
+        <h2><span id="ga-name">Group</span> <button class="btn small" id="ga-close" style="margin-left:auto">← back</button></h2>
+        <div id="ga-adminwarn" class="hint" style="margin-bottom:10px"></div>
+
+        <h3>Name <span class="hint">everyone in the group sees this change</span></h3>
+        <div class="row gap">
+          <input id="ga-subject" placeholder="group name" class="flex1">
+          <button class="btn small primary" id="ga-subject-save">Rename</button>
+        </div>
+        <div id="ga-subject-note" class="muted small" style="margin-top:6px"></div>
+
+        <h3>Description</h3>
+        <textarea id="ga-desc" rows="4" placeholder="(no description)"></textarea>
+        <div class="row gap" style="margin-top:8px">
+          <button class="btn small primary" id="ga-desc-save">Save description</button>
+          <span id="ga-desc-note" class="muted small"></span>
+        </div>
+
+        <h3>Add a member <span class="hint">phone number with country code, digits only</span></h3>
+        <div class="row gap">
+          <input id="ga-add-num" placeholder="15551234567" inputmode="numeric" class="flex1">
+          <button class="btn small primary" id="ga-add-btn">Add</button>
+        </div>
+        <div id="ga-add-note" class="muted small" style="margin-top:6px"></div>
+
+        <h3>Members <span id="ga-count" class="badge">0</span></h3>
+        <input id="ga-member-filter" placeholder="filter members…" style="margin-bottom:10px">
+        <div id="ga-members" class="list"></div>
+      </div>
+
+      <div class="card">
+        <h2>Activity log</h2>
+        <p class="hint">Joins, leaves, removals and admin changes, captured live (from when the bot is running).</p>
+        <div class="row gap" style="margin-bottom:10px">
+          <button class="btn small" id="btn-ga-activity-refresh">Refresh</button>
+          <button class="btn small danger" id="btn-ga-activity-clear">Clear</button>
+        </div>
+        <div id="ga-activity" class="list"><div class="empty">No activity recorded yet.</div></div>
+      </div>
+    </section>
+
+    <!-- ---------- MEMBERS (cross-group) ---------- -->
+    <section class="panel" id="tab-members">
+      <div class="card">
+        <h2>All members <span id="mr-count" class="badge">0</span></h2>
+        <p class="hint">Everyone across every group the bot can see, merged into one list. Click someone to see their groups, where they're an admin, how active they are, and when they joined.</p>
+        <div class="row gap wrap" style="margin-bottom:10px">
+          <input id="mr-filter" class="flex1" placeholder="search by name, number or group…">
+          <select id="mr-sort">
+            <option value="active">Most active</option>
+            <option value="groups">Most groups</option>
+            <option value="admin">Admins first</option>
+            <option value="recent">Recently active</option>
+            <option value="name">Name / number</option>
+          </select>
+          <button class="btn small" id="mr-refresh">Refresh</button>
+        </div>
+        <div id="mr-detail" class="hidden"></div>
+        <div id="mr-list" class="list"><div class="empty">Connect WhatsApp to load members.</div></div>
+        <div id="mr-more" class="row" style="margin-top:10px"></div>
+      </div>
+
+      <div class="card">
+        <h2>Group lockdown 🔒</h2>
+        <div id="lock-status" class="lock-status"><div class="empty">Loading…</div></div>
+        <div class="row gap wrap" style="margin-top:12px">
+          <button class="btn small danger" id="lock-now">🔒 Lock all groups now</button>
+          <button class="btn small primary" id="unlock-now">🔓 Unlock all groups now</button>
+        </div>
+        <h3>Scheduled lockdown</h3>
+        <p class="hint">Locks every group (admins-only messaging) for each window below, then unlocks
+        again when the window ends. Manual lock/unlock always overrides the schedule.</p>
+        <label class="check"><input type="checkbox" id="f-lock-enabled"> Enable the schedule</label>
+        <label>Time zone <span class="hint">IANA name — the windows below are read in this zone</span>
+          <input id="f-lock-tz" placeholder="America/New_York" autocapitalize="off" spellcheck="false">
+        </label>
+        <div id="lock-windows" class="list"><div class="empty">No windows yet.</div></div>
+        <button class="btn small" id="btn-lockwin-add" style="margin-top:10px">+ Add a window</button>
+        <h3>Always-locked groups <span class="hint">stay admins-only even when everything unlocks</span></h3>
+        <p class="hint">Tick groups that are permanently admin-post-only. Unlock (manual or scheduled) will skip these.</p>
+        <div id="always-locked" class="group-list"><div class="empty">Connect WhatsApp to load groups.</div></div>
+        <button class="btn small primary" id="lock-save" style="margin-top:12px">Save lockdown settings</button>
+        <span id="lock-save-note" class="muted small"></span>
+      </div>
+
+      <div class="card">
+        <h2>Auto-moderation 🧹</h2>
+        <p class="hint">Deletes-for-everyone anything in the moderated groups that breaks a rule you
+        switch on below — the same thing an admin would do by hand. Group admins can be left alone,
+        and the bot must be an admin in the group for a delete to work.</p>
+        <label class="check"><input type="checkbox" id="f-mod-enabled"> <b>Enable auto-moderation</b></label>
+        <label class="check"><input type="checkbox" id="f-mod-media"> Delete pictures, screenshots, voice notes and stickers</label>
+        <label class="check"><input type="checkbox" id="f-mod-links"> Delete messages containing a link</label>
+        <label class="check"><input type="checkbox" id="f-mod-offformat"> Delete messages that don't match the required format <span class="hint">(the prefix and minimum length below)</span></label>
+        <label class="check"><input type="checkbox" id="f-mod-requireprefix"> Messages must start with a prefix</label>
+        <label>Prefix<input id="f-mod-prefix" placeholder="!post"></label>
+        <label>Minimum length <span class="hint">characters, after the prefix is stripped</span>
+          <input id="f-mod-minlength" type="number" min="0">
+        </label>
+        <label class="check"><input type="checkbox" id="f-mod-admins"> Never auto-moderate group admins <span class="hint">(recommended)</span></label>
+        <label class="check"><input type="checkbox" id="f-mod-dm"> PM the person explaining why their message was removed</label>
+        <label class="check"><input type="checkbox" id="f-mod-reply"> Also reply in the group <span class="hint">off = delete quietly</span></label>
+        <label>Example of an acceptable message <span class="hint">shown in the warning PM</span>
+          <input id="f-mod-example" placeholder="!post Your message here">
+        </label>
+        <label>Per-person cooldown (s) <span class="hint">ignore further messages from the same person for this long; 0 = off</span>
+          <input id="f-mod-cooldown" type="number" min="0">
+        </label>
+        <button class="btn small primary" id="mod-save" style="margin-top:12px">Save moderation settings</button>
+        <span id="mod-note" class="muted small"></span>
+      </div>
+
+      <div class="card">
+        <h2>Member actions across groups</h2>
+        <label>Phone number <span class="hint">digits + country code</span>
+          <input id="mx-num" placeholder="15551234567" inputmode="numeric">
+        </label>
+        <label>Apply to groups</label>
+        <div class="row gap" style="margin-bottom:8px">
+          <button class="btn tiny" id="mx-all">select all</button>
+          <button class="btn tiny" id="mx-none">select none</button>
+        </div>
+        <div id="mx-groups" class="group-list"><div class="empty">Connect WhatsApp to load groups.</div></div>
+        <div class="row gap wrap" style="margin-top:12px">
+          <button class="btn small primary" id="mx-add">Add to selected</button>
+          <button class="btn small" id="mx-promote">Make admin on selected</button>
+          <button class="btn small" id="mx-demote">Remove admin on selected</button>
+        </div>
+        <div id="mx-note" class="small" style="margin-top:8px"></div>
+        <h3>Ban</h3>
+        <p class="hint">Removes the number from every group it's in, deletes any message they posted in the last 2 days (WhatsApp's delete-for-everyone limit), and adds them to the banned list.</p>
+        <button class="btn small danger" id="mx-banall">⛔ Ban from ALL groups</button>
+      </div>
+
+      <div class="card">
+        <h2>Banned numbers <span id="banned-count" class="badge">0</span></h2>
+        <div class="row gap" style="margin-bottom:10px">
+          <input id="ban-add-num" placeholder="add a number to the banned list" class="flex1">
+          <button class="btn small" id="ban-add">Add</button>
+        </div>
+        <div id="banned-list" class="list"><div class="empty">No banned numbers.</div></div>
+      </div>
+    </section>
+
+    <!-- ---------- ADMINS (super-admin) ---------- -->
+    <section class="panel" id="tab-admins">
+      <div class="card" id="card-admins">
+        <h2>Admin accounts <span class="hint">super-admin only</span></h2>
+        <p class="hint">Each admin signs in with their own login; their portal actions are attributed in the audit log. The super-admin (you) manages accounts here.</p>
+        <div id="admins-list" class="list"></div>
+        <h3>Add an admin</h3>
+        <div class="row gap wrap">
+          <input id="na-user" placeholder="username" class="flex1">
+          <input id="na-pass" type="password" placeholder="password (8+ chars)" class="flex1">
+          <select id="na-role"><option value="admin">admin</option><option value="superadmin">super-admin</option></select>
+          <button class="btn small primary" id="na-add">Add</button>
+        </div>
+        <div id="na-note" class="muted small" style="margin-top:6px"></div>
+      </div>
+
+    </section>
+
+    <!-- ---------- LOGS ---------- -->
+    <section class="panel" id="tab-logs">
+      <div class="card">
+        <h2>Portal audit log</h2>
+        <p class="hint">Every action taken in this portal, with which admin did it.</p>
+        <div class="row gap" style="margin-bottom:10px">
+          <button class="btn small" id="btn-audit-refresh">Refresh</button>
+          <button class="btn small danger superadmin-only hidden" id="btn-audit-clear">Clear</button>
+        </div>
+        <div id="audit-list" class="list"><div class="empty">No actions recorded yet.</div></div>
+      </div>
+
+      <div class="card">
+        <h2>Live log</h2>
+        <div class="row gap wrap" style="margin-bottom:10px">
+          <input id="log-filter" placeholder="filter…" class="flex1" style="margin:0">
+          <select id="log-level" style="width:auto;margin:0">
+            <option value="">all levels</option>
+            <option value="debug">debug+</option>
+            <option value="info">info+</option>
+            <option value="warn">warn+</option>
+            <option value="error">errors only</option>
+          </select>
+          <button class="btn small" id="btn-log-clear">Clear view</button>
+          <label class="check inline"><input type="checkbox" id="log-follow" checked> Follow</label>
+        </div>
+        <pre id="log-out" class="logbox"></pre>
+        <div class="muted small" id="log-count" style="margin-top:6px"></div>
+      </div>
+
+      <div class="card">
+        <h2>Saved debug logs</h2>
+        <p class="hint">Everything is written to disk at debug level, whatever the console is set
+        to, and rotated daily. This is what survives a restart.</p>
+        <div class="row gap wrap" style="margin-bottom:10px">
+          <button class="btn small" id="btn-logfiles-refresh">Refresh</button>
+          <button class="btn small primary" id="btn-logfiles-email">Email me today's log</button>
+        </div>
+        <div id="logfiles" class="list"><div class="empty">Loading…</div></div>
+        <pre id="logfile-view" class="logbox hidden" style="margin-top:12px"></pre>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
