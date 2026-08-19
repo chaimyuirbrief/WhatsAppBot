@@ -21,6 +21,12 @@ async function loadBaileys() {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Gap between individual group setting changes during a bulk lock/unlock.
+// Locking every group is a burst of writes against the same connection, and
+// WhatsApp answers a burst by throttling - or dropping the socket outright.
+// Five seconds a group is slow on purpose; it is what keeps the connection up.
+const DEFAULT_LOCKDOWN_PACE_MS = 5000;
+
 /**
  * Pull a real phone number out of a WhatsApp JID.
  *
@@ -87,6 +93,7 @@ export class WhatsAppBot extends EventEmitter {
     this._groupTimer = null;
     this._groupBusy = false;
     this._lastActionAt = 0;
+    this._lockAllRun = null;
   }
 
   get config() { return this.configStore.get(); }
@@ -714,15 +721,69 @@ export class WhatsAppBot extends EventEmitter {
   }
 
   /**
-   * Lock or unlock EVERY group the bot administers. Paced, and reports per
-   * group (including which ones were skipped because the bot is not an admin).
+   * Gap to leave between group setting changes during a bulk lock/unlock.
+   *
+   * An explicit `override` from a caller is trusted (0 is a legitimate "no
+   * pacing, I know what I am doing"). A value out of config is not: `null`,
+   * `''` and `0` all coerce to "fire everything at once", which is the exact
+   * flood this pacing exists to prevent, so anything that is not a positive
+   * number falls back to the 5s default.
    */
-  async setAllGroupsLocked(locked) {
+  _lockdownPaceMs(override) {
+    if (override !== undefined && override !== null) {
+      const n = Number(override);
+      if (Number.isFinite(n) && n >= 0) return n;
+    }
+    const cfg = Number(this.config.lockdown?.paceMs);
+    return Number.isFinite(cfg) && cfg > 0 ? cfg : DEFAULT_LOCKDOWN_PACE_MS;
+  }
+
+  /**
+   * Lock or unlock EVERY group the bot administers.
+   *
+   * Deliberately slow: strictly one group at a time, with `paceMs` (5s by
+   * default) of quiet between each one. Firing the whole set at WhatsApp at
+   * once is what gets the connection throttled or dropped, so the pacing is
+   * the feature rather than an accident - budget roughly five seconds per
+   * group when a run is going to take a while.
+   *
+   * Runs are also serialized against each other: if a second bulk run is asked
+   * for while one is still walking the groups, it waits its turn rather than
+   * interleaving and leaving groups in mixed states. (The scheduler refuses a
+   * second run outright; this chain is what protects direct callers, e.g. a
+   * plugin.)
+   *
+   * Reports per group, including which ones were skipped because the bot is
+   * not an admin.
+   *
+   * @param {boolean} locked
+   * @param {{paceMs?: number, onProgress?: (p: {done:number,total:number,jid:string|null,subject:string|null}) => void}} [opts]
+   */
+  setAllGroupsLocked(locked, opts = {}) {
+    const prior = this._lockAllRun ?? Promise.resolve();
+    // Chain onto whatever is still walking the groups, so at most one setting
+    // change is ever in flight no matter who asked for it.
+    const run = prior.then(() => this._setAllGroupsLocked(locked, opts));
+    this._lockAllRun = run.catch(() => {});   // failures must not poison the chain
+    return run;
+  }
+
+  async _setAllGroupsLocked(locked, { paceMs, onProgress } = {}) {
+    const gap = this._lockdownPaceMs(paceMs);
     const alwaysLocked = new Set(this.config.lockdown?.alwaysLocked ?? []);
+    const all = this.groups();
+    // Never OPEN a group that is meant to stay admins-only permanently. Those
+    // cost no WhatsApp call, so they are not part of the paced count either.
+    const skip = (g) => !locked && alwaysLocked.has(g.jid);
+    const total = all.filter((g) => !skip(g)).length;
+
+    logger.info(`${locked ? 'locking' : 'unlocking'} ${total} group(s) — one at a time, ${gap}ms apart`);
+    onProgress?.({ done: 0, total, jid: null, subject: null });
+
     const results = [];
-    for (const g of this.groups()) {
-      // Never OPEN a group that is meant to stay admins-only permanently.
-      if (!locked && alwaysLocked.has(g.jid)) {
+    let done = 0;
+    for (const g of all) {
+      if (skip(g)) {
         results.push({ jid: g.jid, subject: g.subject, skipped: 'always locked' });
         continue;
       }
@@ -733,7 +794,12 @@ export class WhatsAppBot extends EventEmitter {
         const notAdmin = /not-authorized|forbidden|403/i.test(err.message ?? '');
         results.push({ jid: g.jid, subject: g.subject, error: notAdmin ? 'bot is not admin' : err.message });
       }
-      await sleep(1200);
+      done += 1;
+      logger.debug(`${locked ? 'locked' : 'unlocked'} ${done}/${total}: ${g.subject || g.jid}`);
+      onProgress?.({ done, total, jid: g.jid, subject: g.subject ?? null });
+      // Wait between groups - never after the last one, which would only
+      // stall the caller for nothing.
+      if (done < total && gap > 0) await sleep(gap);
     }
     logger.info(`${locked ? 'locked' : 'unlocked'} ${results.filter((r) => r.ok).length}/${results.length} groups`);
     return results;

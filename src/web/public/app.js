@@ -933,11 +933,44 @@ function fmtBytes(n) {
 }
 
 /* --------------------------- members / lockdown -------------------- */
-async function loadLockdown() {
+let lockPollTimer = null;
+
+/** Seconds the server leaves between groups during a bulk lock/unlock. */
+function lockPaceSeconds(st) {
+  const ms = Number(st?.paceMs ?? CONFIG?.lockdown?.paceMs);
+  return Number.isFinite(ms) && ms > 0 ? Math.round(ms / 1000) : 5;
+}
+
+/**
+ * A lock/unlock walks the groups one at a time, seconds apart, so it is still
+ * running long after the button click returns. Render how far along it is.
+ */
+function renderLockRun(run, paceSecs) {
+  if (!run) return '';
+  const verb = run.action === 'lock' ? 'Locking' : 'Unlocking';
+  const total = Number.isFinite(run.total) ? run.total : null;
+  const pct = total ? Math.round((run.done / Math.max(1, total)) * 100) : 0;
+  const left = total ? Math.max(0, total - run.done) * paceSecs : null;
+  const eta = left === null ? '' : ` · about ${left < 60 ? `${left}s` : `${Math.ceil(left / 60)} min`} left`;
+  return `
+    <div class="muted small" style="margin-top:8px">
+      ⏳ ${verb} groups one at a time, ${paceSecs}s apart — ${run.done}${total === null ? '' : `/${total}`} done${eta}
+      ${run.current ? `<br>last done: ${esc(run.current)}` : ''}
+    </div>
+    <div class="bar" style="margin-top:6px"><i style="width:${pct}%"></i></div>`;
+}
+
+/**
+ * `statusOnly` refreshes just the status panel. The 3s poll that follows a
+ * paced run uses it: re-seeding the form from CONFIG on every tick would throw
+ * away whatever the admin is part-way through typing into the schedule.
+ */
+async function loadLockdown({ statusOnly = false } = {}) {
   const box = $('lock-status');
   if (!box) return;
   try {
     const st = await api('GET', '/lockdown/status');
+    const paceSecs = lockPaceSeconds(st);
     box.innerHTML = `
       <div class="status-row">
         <span class="dot ${st.locked ? 'bad' : 'ok'}"></span>
@@ -948,13 +981,20 @@ async function loadLockdown() {
             ${st.nextLockAt ? ` · next lock ${new Date(st.nextLockAt).toLocaleString()}` : ''}
             ${st.nextUnlockAt ? ` · unlock ${new Date(st.nextUnlockAt).toLocaleString()}` : ''}
           </div>
+          ${renderLockRun(st.run, paceSecs)}
+          ${!st.run && st.lastRun?.error ? `<div class="muted small" style="margin-top:8px">last ${esc(st.lastRun.action)} failed: ${esc(st.lastRun.error)}</div>` : ''}
         </div>
       </div>`;
-    $('f-lock-enabled').checked = !!CONFIG?.lockdown?.enabled;
-    $('f-lock-tz').value = CONFIG?.lockdown?.timezone ?? '';
-    LOCK_WINDOWS = (CONFIG?.lockdown?.windows ?? []).map(normalizeWindow);
-    renderLockWindows();
-    renderAlwaysLocked();
+    if (!statusOnly) {
+      $('f-lock-enabled').checked = !!CONFIG?.lockdown?.enabled;
+      $('f-lock-tz').value = CONFIG?.lockdown?.timezone ?? '';
+      LOCK_WINDOWS = (CONFIG?.lockdown?.windows ?? []).map(normalizeWindow);
+      renderLockWindows();
+      renderAlwaysLocked();
+    }
+    // Keep refreshing while a paced run is still walking the groups.
+    clearTimeout(lockPollTimer);
+    if (st.run) lockPollTimer = setTimeout(() => loadLockdown({ statusOnly: true }), 3000);
   } catch (err) { box.innerHTML = `<div class="verdict bad">${esc(err.message)}</div>`; }
 }
 
@@ -968,13 +1008,22 @@ function renderAlwaysLocked() {
       <span>${esc(g.subject)} <span class="muted small">(${g.size})</span></span></label>`).join('');
 }
 
+// A refused run is flagged as a warning, not a success - nothing was queued,
+// so the admin has to ask again once the run in flight has finished.
+const lockRunToast = (r, verb) => (r?.started
+  ? toast(`${verb} groups one at a time, ${lockPaceSeconds(r)}s apart — this runs in the background`)
+  : toast('A lockdown run is already in progress — try again once it has finished', true));
+
 $('lock-now')?.addEventListener('click', async () => {
-  if (!confirm('Lock ALL groups now? Only admins will be able to post until you unlock.')) return;
-  try { await api('POST', '/lockdown/lock'); toast('All groups locked'); loadLockdown(); }
+  if (!confirm('Lock ALL groups now? Only admins will be able to post until you unlock.\n\n'
+    + 'Groups are locked one at a time with a pause between each so WhatsApp is not flooded, '
+    + 'so this takes a few minutes to work through them all.')) return;
+  // statusOnly: pressing the button is not a request to discard settings edits.
+  try { lockRunToast(await api('POST', '/lockdown/lock'), 'Locking'); loadLockdown({ statusOnly: true }); }
   catch (err) { toast(err.message, true); }
 });
 $('unlock-now')?.addEventListener('click', async () => {
-  try { await api('POST', '/lockdown/unlock'); toast('All groups unlocked'); loadLockdown(); }
+  try { lockRunToast(await api('POST', '/lockdown/unlock'), 'Unlocking'); loadLockdown({ statusOnly: true }); }
   catch (err) { toast(err.message, true); }
 });
 $('lock-save')?.addEventListener('click', async () => {

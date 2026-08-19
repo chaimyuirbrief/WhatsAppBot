@@ -99,6 +99,11 @@ export const DEFAULT_CONFIG = {
     // 'HH:MM' 24h, and how long it lasts. Windows may cross midnight and the
     // week boundary.
     windows: [],                    // [{ id, label, day, start, durationMinutes, enabled }]
+    // A bulk lock/unlock walks the groups one at a time and waits this long
+    // between each. Locking everything at once is a burst WhatsApp answers by
+    // throttling or dropping the connection, so this stays generous: 5s a
+    // group means ~5 minutes for 60 groups, which is the point.
+    paceMs: 5000,
     // Groups that stay admins-only ALWAYS. Unlock (manual or scheduled) skips
     // these so a permanently-restricted group is never opened by the schedule.
     alwaysLocked: [],

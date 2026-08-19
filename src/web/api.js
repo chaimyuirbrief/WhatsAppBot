@@ -255,13 +255,22 @@ export function createApiRouter({ configStore, bot, queue, pluginManager, stateS
   router.get('/lockdown/status', guard, (req, res) => {
     res.json(lockScheduler ? lockScheduler.status() : { enabled: false });
   });
-  router.post('/lockdown/lock', guard, async (req, res) => {
-    try { await lockScheduler.manualLock(); audit(req, 'locked all groups (manual)'); res.json({ ok: true, ...lockScheduler.status() }); }
-    catch (err) { res.status(400).json({ ok: false, error: friendlyGroupError(err) }); }
+  // Lock/unlock walks the groups one at a time, seconds apart, so the run
+  // outlives this request by minutes. Answer as soon as it has started and let
+  // the portal follow along on /lockdown/status.
+  router.post('/lockdown/lock', guard, (req, res) => {
+    try {
+      const { started } = lockScheduler.manualLock();
+      audit(req, started ? 'locked all groups (manual)' : 'lock ignored — a lockdown run was already in progress');
+      res.json({ ok: true, started, ...lockScheduler.status() });
+    } catch (err) { res.status(400).json({ ok: false, error: friendlyGroupError(err) }); }
   });
-  router.post('/lockdown/unlock', guard, async (req, res) => {
-    try { await lockScheduler.manualUnlock(); audit(req, 'unlocked all groups (manual)'); res.json({ ok: true, ...lockScheduler.status() }); }
-    catch (err) { res.status(400).json({ ok: false, error: friendlyGroupError(err) }); }
+  router.post('/lockdown/unlock', guard, (req, res) => {
+    try {
+      const { started } = lockScheduler.manualUnlock();
+      audit(req, started ? 'unlocked all groups (manual)' : 'unlock ignored — a lockdown run was already in progress');
+      res.json({ ok: true, started, ...lockScheduler.status() });
+    } catch (err) { res.status(400).json({ ok: false, error: friendlyGroupError(err) }); }
   });
 
   /* ------------------------ cross-group members ------------------- */

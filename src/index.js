@@ -145,17 +145,17 @@ async function main() {
     getConfig: () => configStore.get().lockdown,
     getState: () => lockState.get('state', { locked: false, source: null, overriddenWindowKey: null }),
     persist: (st) => lockState.set('state', st),
-    applyLock: async (source) => {
-      logger.warn(`🔒 locking all groups (${source})`);
-      const results = await bot.setAllGroupsLocked(true);
+    applyLock: async (source, { onProgress } = {}) => {
+      logger.warn(`🔒 locking all groups (${source}) — one at a time, this takes a while`);
+      const results = await bot.setAllGroupsLocked(true, { onProgress });
       lockState.set('state', { ...lockState.get('state', {}), locked: true, source, at: Date.now() });
       const lockedCount = results.filter((r) => r.ok).length;
       stateStore.namespace('audit').push('events', { ts: Date.now(), user: `lockdown:${source}`, role: 'system', action: `locked ${lockedCount} groups` }, 2000);
       announcer.post('lock', `🔒 ${lockedCount} group(s) locked — admins only (${source})`).catch(() => {});
     },
-    applyUnlock: async (source, overriddenWindowKey = null) => {
-      logger.warn(`🔓 unlocking all groups (${source})`);
-      const results = await bot.setAllGroupsLocked(false);
+    applyUnlock: async (source, overriddenWindowKey = null, { onProgress } = {}) => {
+      logger.warn(`🔓 unlocking all groups (${source}) — one at a time, this takes a while`);
+      const results = await bot.setAllGroupsLocked(false, { onProgress });
       const prev = lockState.get('state', {});
       lockState.set('state', { ...prev, locked: false, source, overriddenWindowKey: overriddenWindowKey ?? prev.overriddenWindowKey ?? null, at: Date.now() });
       const unlockedCount = results.filter((r) => r.ok).length;

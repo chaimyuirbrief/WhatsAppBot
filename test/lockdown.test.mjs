@@ -76,13 +76,95 @@ console.log('=== scheduler applies + persists ===');
     applyLock:async(src)=>{acts.push('lock:'+src);state={...state,locked:true,source:src};},
     applyUnlock:async(src,key)=>{acts.push('unlock:'+src);state={...state,locked:false,source:src,overriddenWindowKey:key??state.overriddenWindowKey};},
   });
-  await sch.manualLock();
+  await sch.manualLock().run.promise;
   ok(state.locked && state.source==='manual','manualLock locks with manual source');
-  await sch.manualUnlock();
+  await sch.manualUnlock().run.promise;
   ok(!state.locked && state.overriddenWindowKey!==null,'manualUnlock records the overridden window');
 
   const st = sch.status();
   ok(st.enabled===true && st.timezone==='America/New_York' && st.nextLockAt instanceof Date,'status reports the schedule');
+}
+
+console.log('=== a paced run outlives the request, and only one runs at a time ===');
+{
+  // Applying a lock walks the groups seconds apart, so it is deliberately slow.
+  let state={locked:false,source:null,overriddenWindowKey:null};
+  const started=[];
+  let release=null;
+  // applyLock is called as (source, opts); applyUnlock as (source, key, opts).
+  const slow=(src,...rest)=>new Promise((resolve)=>{
+    const { onProgress } = rest[rest.length - 1] ?? {};
+    started.push(src);
+    onProgress?.({done:0,total:3});
+    onProgress?.({done:1,total:3,subject:'One'});
+    release=()=>{state={...state,locked:true,source:src};resolve();};
+  });
+  // No windows + enabled: `decide()` then depends only on the persisted state,
+  // so the tick assertions below hold on every calendar day rather than only
+  // on a Friday evening in New York.
+  const tickCfg={ enabled:true, timezone:'UTC', windows:[] };
+  const sch=new LockScheduler({
+    getConfig:()=>tickCfg, getState:()=>state, persist:(s)=>{state=s;},
+    applyLock:slow, applyUnlock:slow,
+  });
+
+  const first=sch.manualLock();
+  ok(first.started===true,'the first lock starts a run');
+  ok(state.locked===false,'manualLock returns before every group is done');
+  await new Promise((r)=>setTimeout(r,0));   // let the run reach applyLock
+
+  const mid=sch.status();
+  ok(mid.run && mid.run.action==='lock' && mid.run.source==='manual','status reports the run in flight');
+  ok(mid.run.done===1 && mid.run.total===3 && mid.run.current==='One','status reports progress through the groups');
+
+  const second=sch.manualUnlock();
+  ok(second.started===false,'a second run is refused while one is walking the groups');
+  ok(started.length===1,'the refused run never touched WhatsApp');
+
+  // The scheduled tick must not pile on top of a run either. State is set so
+  // decide() definitely wants to act — outside any window and locked by the
+  // schedule — which is what makes the guard, not decide(), the thing tested.
+  state={...state,locked:true,source:'schedule'};
+  await sch.tick();
+  ok(started.length===1,'a scheduler tick is a no-op while a run is in flight');
+
+  release();
+  await first.run.promise;
+  ok(sch.status().run===null,'the run clears when it finishes');
+  ok(sch.status().lastRun?.action==='lock' && sch.status().lastRun.finishedAt,'the finished run is kept as lastRun');
+
+  // ...and with the way clear, that very same tick does start a run — so the
+  // assertion above is about the guard rather than about decide() being idle.
+  state={locked:true,source:'schedule',overriddenWindowKey:null};
+  const ticked=sch.tick();
+  await new Promise((r)=>setTimeout(r,0));
+  ok(started.length===2,'once the run has finished, the same tick does act');
+  ok(started[1]==='schedule','the tick acts as the schedule, not as an admin');
+  release();
+  await ticked;
+
+  // A fresh manual request also gets through now, with its opts intact.
+  const third=sch.manualUnlock();
+  ok(third.started===true,'a new run starts once the previous one finished');
+  await new Promise((r)=>setTimeout(r,0));   // let it reach applyUnlock
+  release();
+  await third.run.promise;
+  ok(third.run.error===null,'the unlock ran cleanly — applyUnlock got its progress callback');
+  ok(started[2]==='manual','the unlock ran as a manual action');
+}
+
+console.log('=== a failing run is reported and does not wedge the scheduler ===');
+{
+  let state={locked:false,source:null,overriddenWindowKey:null};
+  const sch=new LockScheduler({
+    getConfig:()=>cfg, getState:()=>state, persist:(s)=>{state=s;},
+    applyLock:async()=>{throw new Error('connection closed');},
+    applyUnlock:async()=>{},
+  });
+  await sch.manualLock().run.promise;
+  ok(sch.status().run===null,'a failed run clears');
+  ok(sch.status().lastRun?.error==='connection closed','the failure is reported in status');
+  ok(sch.manualUnlock().started===true,'the scheduler still accepts work after a failure');
 }
 
 console.log('\n'+'='.repeat(46)+'\n  '+pass+' passed, '+fail+' failed');

@@ -172,6 +172,13 @@ export function decide(now, cfg, state) {
 /**
  * Drives lock/unlock on a timer. `applyLock`/`applyUnlock` do the WhatsApp work;
  * `persist` saves state so a restart resumes correctly.
+ *
+ * Applying a lock is slow by design - the groups are walked one at a time,
+ * seconds apart, so WhatsApp is never handed a burst of setting changes. A run
+ * therefore outlives the request that asked for it: `manualLock`/`manualUnlock`
+ * return as soon as it has *started*, and `status().run` reports how far along
+ * it is. Only one run walks the groups at a time; anything asked for while one
+ * is in flight is refused rather than stacked on top of it.
  */
 export class LockScheduler {
   constructor({ getConfig, getState, persist, applyLock, applyUnlock }) {
@@ -181,7 +188,8 @@ export class LockScheduler {
     this.applyLock = applyLock;
     this.applyUnlock = applyUnlock;
     this.timer = null;
-    this.busy = false;
+    this.run = null;        // the paced run currently walking the groups
+    this.lastRun = null;
   }
 
   start() {
@@ -205,27 +213,88 @@ export class LockScheduler {
       nextLockAt: win?.lockAt ?? null,
       nextUnlockAt: win?.unlockAt ?? null,
       inWindow: isWithin(new Date(), win),
+      // How the groups are being walked right now, and how the last walk went.
+      paceMs: Number.isFinite(Number(cfg.paceMs)) ? Number(cfg.paceMs) : null,
+      run: runView(this.run),
+      lastRun: runView(this.lastRun),
     };
   }
 
   async tick() {
-    if (this.busy) return;
+    if (this.run) return;             // still walking the groups from last time
     const cfg = this.getConfig();
     const state = this.getState();
     const action = decide(new Date(), cfg, state);
     if (!action) return;
-    this.busy = true;
-    try {
-      if (action === 'lock') { await this.applyLock('schedule'); }
-      else { await this.applyUnlock('schedule'); }
-    } finally { this.busy = false; }
+    const { started, run } = this._begin(action, 'schedule');
+    // Only ever wait on a run this tick started - never park the interval
+    // callback on somebody else's multi-minute walk.
+    if (started) await run.promise;
   }
 
-  /** Admin actions from the portal. */
-  async manualLock() { await this.applyLock('manual'); }
-  async manualUnlock() {
+  /**
+   * Start a paced run, unless one is already going. Returns
+   * `{ started, run }` immediately - `run.promise` settles when every group
+   * has been walked, which for a large account is minutes away.
+   */
+  _begin(action, source, overriddenWindowKey = null) {
+    if (this.run) {
+      logger.warn(`${action} (${source}) ignored: a ${this.run.action} run is already walking the groups`);
+      return { started: false, run: this.run };
+    }
+
+    const run = {
+      action, source,
+      startedAt: Date.now(), finishedAt: null,
+      done: 0, total: null, current: null, error: null,
+    };
+    const onProgress = (p) => {
+      if (Number.isFinite(p?.done)) run.done = p.done;
+      if (Number.isFinite(p?.total)) run.total = p.total;
+      run.current = p?.subject || p?.jid || null;
+    };
+
+    this.run = run;
+    run.promise = Promise.resolve()
+      .then(() => (action === 'lock'
+        ? this.applyLock(source, { onProgress })
+        : this.applyUnlock(source, overriddenWindowKey, { onProgress })))
+      .catch((err) => {
+        run.error = err?.message ?? String(err);
+        logger.error(`${action} (${source}) failed: ${run.error}`);
+      })
+      .finally(() => {
+        run.finishedAt = Date.now();
+        this.lastRun = run;
+        this.run = null;
+      });
+    return { started: true, run };
+  }
+
+  /**
+   * Admin actions from the portal. Both return once the run has started, not
+   * once it has finished - holding an HTTP request open for the minutes a
+   * paced walk takes would only time out in the browser.
+   */
+  manualLock() { return this._begin('lock', 'manual'); }
+  manualUnlock() {
     // Remember which window was overridden so the scheduler won't re-lock it.
     const win = lockWindow(new Date(), this.getConfig());
-    await this.applyUnlock('manual', win?.key ?? null);
+    return this._begin('unlock', 'manual', win?.key ?? null);
   }
+}
+
+/** Serializable view of a run, for the portal. */
+function runView(r) {
+  if (!r) return null;
+  return {
+    action: r.action,
+    source: r.source,
+    done: r.done,
+    total: r.total,
+    current: r.current,
+    error: r.error,
+    startedAt: r.startedAt,
+    finishedAt: r.finishedAt,
+  };
 }

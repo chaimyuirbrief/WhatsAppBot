@@ -54,6 +54,8 @@ change.
   duration, in a timezone you pick, and as many windows as you want
 - Groups on the always-locked list are never opened by an unlock
 - A manual unlock overrides the current window without cancelling the schedule
+- Locking and unlocking is paced: one group at a time, 5 seconds apart, so
+  WhatsApp is never handed the whole set at once
 
 **Rules**
 - Anyone sends `#rules` and gets the group rules back, in a group or by DM
@@ -153,6 +155,33 @@ permanently-restricted group cannot be opened by the schedule or by a bulk
 unlock. A manual unlock during a window is remembered against that window, so
 the scheduler will not immediately re-lock it — the next window locks as
 normal.
+
+### Pacing
+
+Locking every group means one setting change per group against the same
+connection, and sending them in a burst is exactly what makes WhatsApp
+throttle — or drop — that connection. So a lock or unlock walks the groups
+**strictly one at a time, waiting 5 seconds between each**:
+
+| | |
+|---|---|
+| `lockdown.paceMs` | Gap between groups, in milliseconds. Default `5000`. Config file only — there is no reason to turn this down. |
+
+Sixty groups therefore take about five minutes. That is the intended
+behaviour, so the run outlives the request that asked for it:
+
+- **"Lock all groups now"** in the portal returns as soon as the run has
+  *started*. The card then shows live progress (`12/60 done · about 4 min
+  left`) and the last group it got through.
+- Only one run walks the groups at a time. A second lock or unlock asked for
+  while one is in flight is **refused**, not queued — the portal says so, and
+  you ask again once it has finished. That is what stops a manual lock and a
+  scheduled unlock interleaving and leaving groups in mixed states.
+- The saved lock state and the announcement land when the run finishes, with
+  the real counts. So if the process dies part-way through a lock, the state
+  still reads "unlocked" and a scheduled window will lock everything again on
+  the next tick. Outside a window — a manual lock, or the schedule switched
+  off — nothing re-drives it, so check the state after a restart mid-run.
 
 ---
 
@@ -303,7 +332,7 @@ The parts of `ctx.bot` a group-management plugin actually wants:
 | `groups()` / `groupDetails(jid)` / `groupsWithMembers()` | what the bot can see |
 | `isGroupAdmin(jid, { jid, number })` / `groupMemberInfo(...)` | who someone is in a group |
 | `modifyParticipants(jid, targets, action)` | add / remove / promote / demote |
-| `setGroupLocked(jid, bool)` / `setAllGroupsLocked(bool)` | admins-only messaging |
+| `setGroupLocked(jid, bool)` / `setAllGroupsLocked(bool, { paceMs, onProgress })` | admins-only messaging; the bulk form walks the groups one at a time, 5s apart |
 | `setGroupSubject` / `setGroupDescription` / `applyDescriptions(plan)` | rename and re-describe |
 | `banFromAllGroups(number, { wipeMessages })` | remove everywhere, optionally wiping |
 | `deleteRecentMessagesFrom({ number, jid })` | wipe within WhatsApp's delete window |
