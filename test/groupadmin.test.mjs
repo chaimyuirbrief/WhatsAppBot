@@ -2,7 +2,10 @@
 import { WhatsAppBot } from '../src/core/bot.js';
 let pass=0,fail=0;
 const ok=(c,m)=>{c?(pass++,console.log(`  ok   ${m}`)):(fail++,console.log(`  FAIL ${m}`));};
-const bot = new WhatsAppBot({ configStore:{ get:()=>({whatsapp:{}}) }, dataDir:'/tmp' });
+// Pacing off by default here: these tests assert behaviour, not wall-clock.
+// The blocks that DO test pacing set their own gaps explicitly.
+const noPace = { jitterMs:0, groupSettingMs:0, descriptionMs:0, participantMs:0, crossGroupMs:0, revokeMs:0 };
+const bot = new WhatsAppBot({ configStore:{ get:()=>({whatsapp:{pacing:noPace}}) }, dataDir:'/tmp' });
 
 console.log('=== numberFromJid ===');
 ok(bot.numberFromJid('17185551234@s.whatsapp.net')==='17185551234','phone JID -> number');
@@ -74,12 +77,16 @@ console.log('=== the default pace is 5s between groups, and it waits between the
   ok(bot._lockdownPaceMs(250)===250,'an explicit pace overrides the default');
   ok(bot._lockdownPaceMs(0)===0,'a caller may explicitly ask for no pacing');
   // A junk config value must never silently mean "fire everything at once" -
-  // that is the flood the pacing exists to prevent.
-  for (const bad of [null,'',0,-1,'nope',false]) {
-    bot.configStore={ get:()=>({ whatsapp:{}, lockdown:{ paceMs:bad } }) };
+  // that is the flood the pacing exists to prevent. `null`, `''` and `false`
+  // all coerce to 0, so the check is on the TYPE, not on Number(x).
+  for (const bad of [null,'',-1,'nope',false,undefined,{},[]]) {
+    bot.configStore={ get:()=>({ whatsapp:{pacing:noPace}, lockdown:{ paceMs:bad } }) };
     ok(bot._lockdownPaceMs()===5000,`config paceMs ${JSON.stringify(bad)} falls back to 5s, not to no pacing`);
   }
-  bot.configStore={ get:()=>({ whatsapp:{}, lockdown:{ paceMs:120 } }) };
+  // A real number is taken at face value, including a deliberate 0.
+  bot.configStore={ get:()=>({ whatsapp:{pacing:noPace}, lockdown:{ paceMs:0 } }) };
+  ok(bot._lockdownPaceMs()===0,'a deliberate numeric 0 in config is honoured');
+  bot.configStore={ get:()=>({ whatsapp:{pacing:{...noPace,jitterMs:0}}, lockdown:{ paceMs:120 } }) };
   ok(bot._lockdownPaceMs()===120,'config paceMs is honoured');
   ok(bot._lockdownPaceMs(undefined)===120,'an absent override falls through to config');
 
@@ -111,7 +118,7 @@ console.log('=== concurrent bulk runs are serialized, not interleaved ===');
 {
   let live=0, maxLive=0;
   const order=[];
-  bot.configStore={ get:()=>({ whatsapp:{}, lockdown:{} }) };
+  bot.configStore={ get:()=>({ whatsapp:{pacing:noPace}, lockdown:{} }) };
   bot.sock={ groupSettingUpdate: async(jid,setting)=>{
     maxLive=Math.max(maxLive,++live);
     order.push(setting);
@@ -147,7 +154,7 @@ console.log('=== concurrent bulk runs are serialized, not interleaved ===');
 console.log('=== unlock skips always-locked groups ===');
 {
   const calls=[];
-  bot.configStore={ get:()=>({ whatsapp:{}, lockdown:{ alwaysLocked:['keep@g.us'] } }) };
+  bot.configStore={ get:()=>({ whatsapp:{pacing:noPace}, lockdown:{ alwaysLocked:['keep@g.us'] } }) };
   bot.sock={ groupSettingUpdate: async(jid,setting)=>{ calls.push({jid,setting}); } };
   bot.state='connected';
   bot.groupCache=new Map([['open@g.us',{jid:'open@g.us',subject:'Open'}],['keep@g.us',{jid:'keep@g.us',subject:'Keep locked'}]]);

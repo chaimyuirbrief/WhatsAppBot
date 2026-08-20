@@ -10,7 +10,7 @@
   "scripts": {
     "start": "./start.sh",
     "dev": "node --watch src/index.js",
-    "test": "node test/semaphore.test.mjs && node test/queue.test.mjs && node test/auth.test.mjs && node test/logging.test.mjs && node test/lockdown.test.mjs && node test/rules.test.mjs && node test/rules-groups.test.mjs && node test/enforcement.test.mjs && node test/admin-commands.test.mjs && node test/notify.test.mjs && node test/group-mention.test.mjs && node test/groupadmin.test.mjs && node test/members-roster.test.mjs && node test/member-activity.test.mjs && node test/ban-wipe.test.mjs && node test/self-identity.test.mjs && node test/appstate.test.mjs && node test/webui-lint.test.mjs && node test/portal-search.test.mjs"
+    "test": "node test/semaphore.test.mjs && node test/pacing.test.mjs && node test/queue.test.mjs && node test/auth.test.mjs && node test/logging.test.mjs && node test/lockdown.test.mjs && node test/rules.test.mjs && node test/rules-groups.test.mjs && node test/enforcement.test.mjs && node test/admin-commands.test.mjs && node test/notify.test.mjs && node test/group-mention.test.mjs && node test/groupadmin.test.mjs && node test/members-roster.test.mjs && node test/member-activity.test.mjs && node test/ban-wipe.test.mjs && node test/self-identity.test.mjs && node test/appstate.test.mjs && node test/webui-lint.test.mjs && node test/portal-search.test.mjs"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.9",

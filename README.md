@@ -21,8 +21,9 @@ Mitigations that actually help:
 - Do not add the bot to groups you do not own.
 - Keep volume low and human-shaped.
 - Be careful with the bulk actions. "Lock all groups" and "ban from all groups"
-  fan out one API call per group, which is exactly the pattern WhatsApp rate
-  limits. The bot paces them deliberately; do not remove that.
+  are one API call per group, which is exactly the pattern WhatsApp rate
+  limits. The bot paces every one of them on purpose — see [Pacing](#pacing-1).
+  Expect them to take minutes, and do not turn the gaps down.
 
 If this becomes something you rely on, move to the **WhatsApp Business Cloud
 API**, which is the sanctioned route. The plugin interface here is
@@ -158,14 +159,9 @@ normal.
 
 ### Pacing
 
-Locking every group means one setting change per group against the same
-connection, and sending them in a burst is exactly what makes WhatsApp
-throttle — or drop — that connection. So a lock or unlock walks the groups
-**strictly one at a time, waiting 5 seconds between each**:
-
-| | |
-|---|---|
-| `lockdown.paceMs` | Gap between groups, in milliseconds. Default `5000`. Config file only — there is no reason to turn this down. |
+A lock or unlock walks the groups **strictly one at a time, waiting 5 seconds
+between each** (`lockdown.paceMs`) — see [Pacing](#pacing-1) for the policy
+this belongs to and the gaps every other action gets.
 
 Sixty groups therefore take about five minutes. That is the intended
 behaviour, so the run outlives the request that asked for it:
@@ -182,6 +178,54 @@ behaviour, so the run outlives the request that asked for it:
   still reads "unlocked" and a scheduled window will lock everything again on
   the next tick. Outside a window — a manual lock, or the schedule switched
   off — nothing re-drives it, so check the state after a restart mid-run.
+
+---
+
+## Pacing
+
+Everything this bot does to WhatsApp is deliberately slow. Not slow enough to
+be useless — roughly a fast admin working through a list by hand, and a little
+quicker than a person would actually manage. That is the whole point: the
+throughput a burst would buy you is exactly the signal that gets an account
+rate-limited or banned.
+
+One clock, two sizes of gap, both configured under `whatsapp`:
+
+**Messages, reactions and documents** — `minActionDelayMs` (1200) to
+`maxActionDelayMs` (3500), picked at random per message. Auto-moderation's
+delete-for-everyone rides this one too, so a flood of rule-breaking posts
+cannot turn into a flood of outbound revokes.
+
+**Administrative actions** — `whatsapp.pacing`, the ones nobody does fifty of
+in a row:
+
+| Setting | Default | Covers |
+|---|---|---|
+| `groupSettingMs` | 5000 | Locking / unlocking one group |
+| `descriptionMs` | 5000 | Rewriting one group's description |
+| `participantMs` | 4000 | Add / remove / promote / demote inside one group |
+| `crossGroupMs` | 6000 | The same person across many groups (ban-from-all) |
+| `revokeMs` | 2500 | Delete-for-everyone, one message |
+| `jitterMs` | 2000 | Random extra added on top of **every** gap above |
+
+Three properties matter more than the numbers:
+
+- **One clock, shared.** Every gap is measured against the last thing the bot
+  sent, whatever sent it. Two bulk jobs running at once still add up to one
+  paced stream rather than two — otherwise "5 seconds apart" quietly becomes
+  2.5 while a second job is running.
+- **One action in flight.** Nothing fans out. A bulk job is a queue of one.
+- **Jitter.** A gap of exactly 5.000s every time is a signature no human
+  produces. The jitter only ever *adds*, so a configured gap is a floor.
+
+Bulk jobs are slow enough to outlive the request that started them — a
+ban-from-all across forty groups is four minutes of work. Run them from the
+portal, which reports progress, or through `ctx.queue` in a plugin.
+
+A value that is not a real number (`null`, `""`, `false`, a typo) falls back
+to the default rather than coercing to zero, because a silent zero is the
+flood this exists to prevent. A deliberate numeric `0` **is** honoured and
+logs a warning — but there is no good reason to set one.
 
 ---
 
@@ -277,7 +321,9 @@ returns a mask rather than the value.
 npm test
 ```
 
-Covers the scheduled-lock window maths (including both daylight-saving
+Covers the outbound pacing (every bulk path, the shared clock, and the
+fallbacks that stop a bad config value meaning "no pacing"), the scheduled-lock
+window maths (including both daylight-saving
 transitions), the moderation rule decisions and their false-positive guards,
 rules routing, the member roster and identity merging, ban-and-wipe, group
 admin actions, auth and rate limiting, log rotation, and a lint pass over the
@@ -331,10 +377,10 @@ The parts of `ctx.bot` a group-management plugin actually wants:
 | `react(msg, emoji)` / `deleteMessage(msg)` | acknowledge or remove a message |
 | `groups()` / `groupDetails(jid)` / `groupsWithMembers()` | what the bot can see |
 | `isGroupAdmin(jid, { jid, number })` / `groupMemberInfo(...)` | who someone is in a group |
-| `modifyParticipants(jid, targets, action)` | add / remove / promote / demote |
+| `modifyParticipants(jid, targets, action)` | add / remove / promote / demote, in paced chunks of five |
 | `setGroupLocked(jid, bool)` / `setAllGroupsLocked(bool, { paceMs, onProgress })` | admins-only messaging; the bulk form walks the groups one at a time, 5s apart |
 | `setGroupSubject` / `setGroupDescription` / `applyDescriptions(plan)` | rename and re-describe |
-| `banFromAllGroups(number, { wipeMessages })` | remove everywhere, optionally wiping |
+| `banFromAllGroups(number, { wipeMessages })` | remove everywhere, optionally wiping — minutes, not seconds |
 | `deleteRecentMessagesFrom({ number, jid })` | wipe within WhatsApp's delete window |
 | `sendDocument(jid, path, { fileName, mimetype })` | send a file, e.g. a roster export |
 

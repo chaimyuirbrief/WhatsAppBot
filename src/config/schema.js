@@ -22,8 +22,31 @@ export const DEFAULT_CONFIG = {
     markOnline: false,          // keeping this false leaves your phone's presence alone
     // Deliberate pacing between outbound actions. This exists so the bot does
     // not flood your own groups or hammer the connection, not to disguise it.
+    // Messages, reactions and documents:
     minActionDelayMs: 1200,
     maxActionDelayMs: 3500,
+
+    // Administrative actions - the ones WhatsApp watches for automation,
+    // because no person does fifty of them in a row. Each value is the
+    // MINIMUM quiet time before the next outbound action of that kind, and
+    // the gap is shared across everything the bot does, so two bulk jobs at
+    // once still add up to one paced stream rather than two.
+    //
+    // Calibrated at "a fast admin doing it by hand" - a little quicker than a
+    // person, nowhere near as fast as a script. Slower is always safer; there
+    // is no reason to turn these down. A deliberate 0 disables that gap and
+    // is logged as a warning; anything that is not a number falls back to the
+    // default below it.
+    pacing: {
+      // Random extra time added on top of every gap. A metronome-exact
+      // interval is itself a signature - nobody taps a button every 5.000s.
+      jitterMs: 2000,
+      groupSettingMs: 5000,   // lock / unlock one group (lockdown.paceMs wins for lockdown runs)
+      descriptionMs: 5000,    // rewrite one group's description
+      participantMs: 4000,    // add / remove / promote / demote within one group
+      crossGroupMs: 6000,     // act on the same person across many groups
+      revokeMs: 2500,         // delete-for-everyone, one message
+    },
   },
 
   plugins: {
