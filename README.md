@@ -50,6 +50,11 @@ change.
   posted in the last couple of days (WhatsApp's delete-for-everyone window)
 - Locally-maintained banned-number list
 
+**Backup**
+- One encrypted file with the settings, admins, WhatsApp link and master key
+- Restores onto a fresh machine without re-pairing the phone
+- From the portal or the command line
+
 **Accountability**
 - Every portal action is recorded against the admin who took it
 - Filter the log by kind of action, by admin, or by phrase
@@ -296,6 +301,90 @@ put a shadow copy beside every entry and doubled every count.
 
 ---
 
+## Backup and moving to a new machine
+
+One encrypted file holds everything needed to stand this bot up again
+somewhere else. `Settings → Backup & restore` in the portal, or from a shell:
+
+```bash
+node bin/backup.js create -o ~/wa-backup.wabak   # or: npm run backup
+node bin/backup.js inspect ~/wa-backup.wabak     # what is in it, no passphrase needed
+node bin/backup.js restore ~/wa-backup.wabak
+```
+
+### What travels, and what does not
+
+| | |
+|---|---|
+| `data/config.json` | Settings, admin accounts, encrypted secrets |
+| **`MASTER_KEY` from `.env`** | What those secrets are encrypted *with* |
+| `data/session/` | The WhatsApp link — no need to re-pair the phone |
+| `data/state.json` | Audit log, lockdown state, member activity, banned numbers |
+| `data/backups/` | Saved original group descriptions |
+| ~~`data/logs/`~~ | Left out: large, regenerated, useless to a rebuild |
+
+The master key is the part that is easy to miss. Copying `data/` alone
+restores to settings nobody can read — and it looks like it worked right up
+until the SMTP password and session secret come back blank. So the key travels
+with the config it decrypts.
+
+### It is always encrypted, and that is not optional
+
+The file contains a working WhatsApp session and the key to every stored
+secret. Anyone holding it and the passphrase can act as your account. So there
+is no plaintext option, the passphrase is at least 12 characters, and it is
+stretched with scrypt before it touches the data. Lose the passphrase and the
+backup is gone — including for you.
+
+Only a super-admin can take or restore one, and both are recorded in the audit
+log. `*.wabak` is in `.gitignore`.
+
+### Moving to a new Ubuntu box
+
+```bash
+# on the old machine
+node bin/backup.js create -o ~/wa-backup.wabak
+
+# copy it across, then on the new one
+git clone <your repo> && cd WhatsAppBot
+./install.sh
+node bin/backup.js restore ~/wa-backup.wabak
+npm start
+```
+
+The bot comes back with its settings, its admins and its WhatsApp link intact.
+
+### Restoring safely
+
+- **Stop the bot first.** Writing over session files WhatsApp has open corrupts
+  the link the backup exists to preserve. The portal refuses while connected;
+  the CLI refuses if the service is running.
+- **Nothing is deleted.** Whatever is in `data/` is copied to
+  `data.pre-restore-<timestamp>/` before anything is written, so the wrong file
+  is recoverable by hand.
+- **Try it first** with `--dry-run`, which reports what would happen and writes
+  nothing.
+- **Restart afterwards.** Settings are read into memory at startup, so a
+  restore is not in effect until the process comes back up.
+- **An archive is untrusted input, even your own.** A backup is a file that
+  gets carried between machines and handed to people, so a restore only writes
+  the paths a backup is actually made of — never a `.js` or anything outside
+  those sections, and never through a symlink already sitting in `data/`.
+  Anything else in an archive is skipped and reported, not followed.
+
+### Unattended backups
+
+Set `BACKUP_PASSPHRASE` and the CLI will not prompt, so a nightly copy is a
+cron line:
+
+```
+0 3 * * *  cd /opt/WhatsAppBot && BACKUP_PASSPHRASE='…' node bin/backup.js create -o /backups/wa-$(date +\%F).wabak
+```
+
+Keep those somewhere you would keep a password.
+
+---
+
 ## Auto-moderation
 
 Everything here is off until you switch it on, because the action is
@@ -388,7 +477,9 @@ returns a mask rather than the value.
 npm test
 ```
 
-Covers the outbound pacing (every bulk path, the shared clock, and the
+Covers backup and restore (what travels, the refusals, a full rebuild onto a
+bare machine, and that a hostile archive cannot write outside the data
+directory), the outbound pacing (every bulk path, the shared clock, and the
 fallbacks that stop a bad config value meaning "no pacing"), the audit log's
 bucketing and per-admin queries (both the pure rules and the live HTTP
 endpoints), the scheduled-lock window maths (including both daylight-saving
@@ -480,6 +571,7 @@ src/
     lockdown.js         recurring lock windows, DST-correct
     audit.js            bucketing portal actions, per-admin queries
     paced-socket.js     the socket wrapper that makes pacing automatic
+    backup.js           what travels to a new machine, encrypted
     members.js          the cross-group member roster
     member-activity.js  per-member post counts
     message-index.js    recent message keys, so a ban can wipe what they posted
@@ -516,6 +608,9 @@ members, and delete other people's messages.
 - Every action through the panel is written to an audit log.
 - Secrets encrypted at rest in `config.json`.
 - `data/` is `0700`, `.env` is `0600`.
+- Backups are always passphrase-encrypted (scrypt + AES-256-GCM), super-admin
+  only, and audited. A `.wabak` is a working copy of the account — treat it
+  exactly like the server itself, and keep it off shared storage.
 
 **Do not port-forward this to the internet without HTTPS in front.** If you
 need remote access, use an SSH tunnel:
@@ -533,6 +628,10 @@ and set the bind address to `127.0.0.1`.
 | Symptom | Cause |
 |---|---|
 | Pairing code never arrives | Number must be digits only with country code, no `+` |
+| Restored on a new box, but email/settings are blank | The backup had no `MASTER_KEY` — check `node bin/backup.js inspect` says "master key: included" |
+| "Wrong passphrase, or the backup file is damaged" | Exactly that. There is no recovery path; the passphrase is not stored anywhere |
+| Restore says it skipped files | The archive held paths outside the backed-up sections, or a symlink was in the way. Skipped entries are listed; nothing outside `data/` is ever written |
+| Restore says a restart is required | It does. Settings are read into memory at startup — `sudo systemctl restart whatsapp-bot` |
 | "Session taken over" | Another WhatsApp Web session displaced this one |
 | Nothing happens in a group | The bot must be a member; check the group JID in Settings |
 | Can't lock a group / kick someone | The bot must be an **admin** of that group |

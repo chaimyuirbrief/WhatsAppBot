@@ -116,6 +116,7 @@ async function enterApp() {
   await loadConfig();
   loadAdmins();
   loadAudit();
+  loadBackup();
   loadLockdown();
   loadBanned();
   loadMembersRoster();
@@ -1104,6 +1105,126 @@ $('ban-add')?.addEventListener('click', async () => {
     if (!cur.includes(n)) { CONFIG = await api('PUT', '/config', { bannedNumbers: [...cur, n] }); }
     $('ban-add-num').value = ''; loadBanned();
   } catch (err) { toast(err.message, true); }
+});
+
+/* ------------------------- backup & restore ------------------------ */
+let BK_PREVIEW = null;
+
+async function loadBackup() {
+  const box = $('bk-sections');
+  if (!box || CURRENT_USER?.role !== 'superadmin') return;
+  try {
+    const r = await api('GET', '/backup/preview');
+    BK_PREVIEW = r;
+    box.innerHTML = r.sections.map((sec) => `
+      <label class="check">
+        <input type="checkbox" class="bk-sec" value="${esc(sec.key)}" checked ${sec.always ? 'disabled' : ''}>
+        <span>${esc(sec.label)}
+          <span class="muted small">${sec.files} file${sec.files === 1 ? '' : 's'}${sec.always ? ' · always included' : ''}</span>
+          ${sec.sensitive ? '<span class="tag failed">sensitive</span>' : ''}
+        </span>
+      </label>`).join('')
+      + (r.hasMasterKey ? '' : `<div class="verdict bad">No MASTER_KEY found on this machine — encrypted
+         settings would not survive a restore. Check that .env exists next to the app.</div>`);
+    $('bk-pass').placeholder = `at least ${r.minPassphrase} characters`;
+  } catch (err) { box.innerHTML = `<div class="verdict bad">${esc(err.message)}</div>`; }
+}
+
+$('bk-create')?.addEventListener('click', async () => {
+  const pass = $('bk-pass').value;
+  const note = $('bk-note');
+  const min = BK_PREVIEW?.minPassphrase ?? 12;
+  if (pass !== $('bk-pass2').value) { note.innerHTML = '<span style="color:var(--danger)">The two passphrases do not match.</span>'; return; }
+  if ((pass ?? '').length < min) { note.innerHTML = `<span style="color:var(--danger)">Use at least ${min} characters.</span>`; return; }
+
+  const sections = [...document.querySelectorAll('.bk-sec:checked')].map((i) => i.value);
+  note.textContent = 'building…';
+  try {
+    // Not through api(): the response is a file, not JSON.
+    const res = await fetch('/api/backup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passphrase: pass, sections }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? res.statusText);
+
+    const blob = await res.blob();
+    const name = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') ?? '')?.[1]
+      ?? 'whatsapp-bot-backup.wabak';
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+
+    note.innerHTML = `<span style="color:var(--accent)">saved ${esc(name)} (${fmtBytes(blob.size)})</span>`;
+    $('bk-pass').value = ''; $('bk-pass2').value = '';
+  } catch (err) { note.innerHTML = `<span style="color:var(--danger)">${esc(err.message)}</span>`; }
+});
+
+/** POST a chosen file to one of the backup endpoints as raw bytes. */
+async function bkSend(path, extraHeaders = {}) {
+  const file = $('bk-file').files?.[0];
+  if (!file) throw new Error('Choose a backup file first');
+  const res = await fetch(`/api${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream', ...extraHeaders },
+    body: await file.arrayBuffer(),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error ?? res.statusText);
+  return data;
+}
+
+/**
+ * Describe an uploaded backup. Everything here comes from the file's PLAINTEXT
+ * header, which anyone handing over a .wabak controls, so it is escaped even
+ * though the server also filters it — this string goes into innerHTML.
+ */
+function bkDescribe(m) {
+  return `made ${m.createdAt ? new Date(m.createdAt).toLocaleString() : 'unknown'}`
+    + ` · ${esc(m.fileCount ?? '?')} files · ${(m.sections ?? []).map(esc).join(', ')}`
+    + (m.hasMasterKey ? '' : ' · <span style="color:var(--danger)">no master key</span>');
+}
+
+$('bk-check')?.addEventListener('click', async () => {
+  const out = $('bk-preview');
+  out.textContent = 'reading…';
+  try {
+    const m = await bkSend('/backup/inspect');
+    out.innerHTML = `<span class="muted">${bkDescribe(m)}</span>`;
+  } catch (err) { out.innerHTML = `<span style="color:var(--danger)">${esc(err.message)}</span>`; }
+});
+
+$('bk-restore')?.addEventListener('click', async () => {
+  const out = $('bk-result');
+  const pass = $('bk-rpass').value;
+  if (!pass) { out.innerHTML = '<span style="color:var(--danger)">Enter the passphrase for this backup.</span>'; return; }
+
+  // Dry run first, so the confirmation can say what is actually about to happen
+  // rather than asking the operator to trust a filename.
+  out.textContent = 'checking…';
+  let plan;
+  try {
+    plan = await bkSend('/backup/restore', { 'x-backup-passphrase': pass, 'x-backup-dry-run': '1' });
+  } catch (err) { out.innerHTML = `<span style="color:var(--danger)">${esc(err.message)}</span>`; return; }
+
+  if (!confirm(`Restore ${plan.restored.length} file(s) from a backup made `
+    + `${plan.manifest?.createdAt ? new Date(plan.manifest.createdAt).toLocaleString() : 'at an unknown time'}?\n\n`
+    + 'This replaces the settings, admin accounts and WhatsApp link on this machine. '
+    + 'The current contents are copied aside first.\n\n'
+    + 'The bot must be restarted afterwards.')) { out.textContent = ''; return; }
+
+  out.textContent = 'restoring…';
+  try {
+    const r = await bkSend('/backup/restore', { 'x-backup-passphrase': pass });
+    $('bk-rpass').value = '';
+    out.innerHTML = `<div class="verdict good">Restored ${r.restored.length} file(s).</div>`
+      + `<div class="muted small" style="margin-top:6px">`
+      + (r.movedAside ? `Previous contents kept at <code>${esc(r.movedAside)}</code>.<br>` : '')
+      + (r.masterKey ? 'MASTER_KEY written to .env.<br>' : '')
+      + `<b>Restart the bot now</b> — settings were read into memory at startup and none of this is in effect until it comes back up.</div>`;
+  } catch (err) { out.innerHTML = `<span style="color:var(--danger)">${esc(err.message)}</span>`; }
 });
 
 /* --------------------------- accounts / audit ---------------------- */

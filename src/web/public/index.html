@@ -278,6 +278,52 @@
         <textarea id="f-plugins" rows="3"></textarea>
         <div id="plugin-list" class="kv" style="margin-top:12px"></div>
       </div>
+
+      <div class="card superadmin-only hidden" id="card-backup">
+        <h2>Backup &amp; restore 💾</h2>
+        <p class="hint">Everything needed to stand this bot up again on another machine, in one
+        encrypted file: settings, admin accounts, the WhatsApp link, and the key that decrypts
+        your saved secrets. Logs are left out.</p>
+
+        <h3>Make a backup</h3>
+        <div id="bk-sections" class="list"><div class="empty">Loading…</div></div>
+        <div class="row gap wrap" style="margin-top:10px">
+          <label class="flex1">Passphrase <span class="hint">you will need this to restore — it cannot be recovered</span>
+            <input id="bk-pass" type="password" autocomplete="new-password" placeholder="at least 12 characters">
+          </label>
+          <label class="flex1">Repeat
+            <input id="bk-pass2" type="password" autocomplete="new-password">
+          </label>
+        </div>
+        <div class="verdict warn" style="margin-top:10px">
+          This file is a working copy of your WhatsApp account. Anyone with it and the passphrase
+          can act as you. Store it like a password.
+        </div>
+        <button class="btn small primary" id="bk-create" style="margin-top:10px">Download backup</button>
+        <span id="bk-note" class="muted small"></span>
+
+        <h3>Restore from a backup</h3>
+        <p class="hint">Replaces the settings and session on this machine. Disconnect WhatsApp first,
+        and restart the bot afterwards. Whatever is here now is copied aside, not deleted.</p>
+        <div class="row gap wrap">
+          <input type="file" id="bk-file" accept=".wabak" class="flex1">
+          <input id="bk-rpass" type="password" placeholder="passphrase" autocomplete="off" class="flex1">
+        </div>
+        <div id="bk-preview" class="small" style="margin-top:8px"></div>
+        <div class="row gap wrap" style="margin-top:10px">
+          <button class="btn small" id="bk-check">Check this file</button>
+          <button class="btn small danger" id="bk-restore">Restore onto this machine</button>
+        </div>
+        <div id="bk-result" class="small" style="margin-top:8px"></div>
+
+        <h3>Moving to a new machine</h3>
+        <pre class="snippet"># on the old machine
+node bin/backup.js create -o ~/wa-backup.wabak
+
+# on the new one, after ./install.sh
+node bin/backup.js restore ~/wa-backup.wabak
+npm start</pre>
+      </div>
     </section>
 
     <!-- ---------- GROUPS ADMIN ---------- -->

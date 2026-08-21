@@ -126,6 +126,13 @@ async function main() {
 
   // Load whatever plugins are enabled in config.
   for (const name of config.plugins.enabled) {
+    // A plugin is a folder name in src/plugins, nothing else. Without this,
+    // "../../data/pwn" resolves to data/pwn/index.js - a directory a restored
+    // backup can write into - and the import below would execute it.
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(String(name))) {
+      logger.error(`refusing to load plugin "${name}": not a plain folder name`);
+      continue;
+    }
     const entry = path.join(__dirname, 'plugins', name, 'index.js');
     if (!fs.existsSync(entry)) {
       logger.error(`plugin "${name}" not found at ${entry}`);
@@ -164,7 +171,7 @@ async function main() {
     },
   });
 
-  const app = createServer({ configStore, bot, queue, pluginManager, stateStore, fileLogger, alerts, lockScheduler });
+  const app = createServer({ configStore, bot, queue, pluginManager, stateStore, fileLogger, alerts, lockScheduler, dataDir: DATA_DIR, appRoot: ROOT });
   await startServer(app, configStore);
   bot.on('state', (st) => {
     if (st.state !== 'connected') return;

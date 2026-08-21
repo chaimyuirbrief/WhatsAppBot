@@ -51,4 +51,11 @@ Or install it as a service that survives reboots:
 Then open the control panel from any device on your network:
     http://$(hostname -I | awk '{print $1}'):8080
 
+Moving an existing bot onto this machine? Copy its backup file across and:
+    node bin/backup.js restore /path/to/backup.wabak
+
+That restores the settings, the admin accounts and the WhatsApp link, so
+there is no need to re-pair the phone. Make one on the old machine with:
+    node bin/backup.js create
+
 EOF

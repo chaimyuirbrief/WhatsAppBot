@@ -1,5 +1,7 @@
 import express from 'express';
 import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import log from '../util/logger.js';
 import { MASK } from '../config/store.js';
 import { verifyEmail, sendTestEmail, PRESETS } from '../util/mailer.js';
@@ -12,8 +14,16 @@ import { verifyPassword } from '../util/crypto.js';
 import { fmtBytes } from '../util/format.js';
 import { aggregateMembers, memberDetail } from '../core/members.js';
 import { queryAudit, summarize, classify } from '../core/audit.js';
+import {
+  collectBackup, packBackup, unpackBackup, inspectBackup, restoreBackup,
+  backupFilename, safeManifest, SECTIONS, MIN_PASSPHRASE,
+} from '../core/backup.js';
 
 const logger = log.scope('api');
+
+// Only a fallback: index.js passes the real paths in. Kept so the router can
+// still be mounted standalone (tests, a future embedding) without blowing up.
+const APP_ROOT_FALLBACK = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 /**
  * A page size from a query string: `fallback` when absent or nonsense, clamped
@@ -25,8 +35,13 @@ function clampPage(raw, fallback, max) {
   return Math.min(max, Math.floor(n));
 }
 
-export function createApiRouter({ configStore, bot, queue, pluginManager, stateStore, fileLogger, alerts, lockScheduler }) {
+export function createApiRouter({ configStore, bot, queue, pluginManager, stateStore, fileLogger, alerts, lockScheduler, dataDir, appRoot }) {
   const router = express.Router();
+  // Where this install keeps its data and its .env. Passed in rather than
+  // recomputed so the API agrees with index.js about DATA_DIR, including when
+  // it has been overridden by the environment.
+  const DATA_DIR = dataDir ?? path.join(APP_ROOT_FALLBACK, 'data');
+  const APP_ROOT = appRoot ?? APP_ROOT_FALLBACK;
   const guard = requireAuth(configStore);
   const superGuard = requireSuperAdmin(configStore);
   migrateIfNeeded(configStore);
@@ -345,6 +360,96 @@ export function createApiRouter({ configStore, bot, queue, pluginManager, stateS
       audit(req, started ? 'unlocked all groups (manual)' : 'unlock ignored — a lockdown run was already in progress');
       res.json({ ok: true, started, ...lockScheduler.status() });
     } catch (err) { res.status(400).json({ ok: false, error: friendlyGroupError(err) }); }
+  });
+
+  /* ------------------------------ backup -------------------------- */
+
+  /**
+   * Everything needed to rebuild this bot elsewhere, in one encrypted file.
+   * Super-admin only, and audited: the file contains the WhatsApp session and
+   * the key to every stored secret, so who took one is worth recording.
+   */
+  router.post('/backup', guard, superGuard, (req, res) => {
+    try {
+      const sections = Array.isArray(req.body?.sections) && req.body.sections.length
+        ? req.body.sections.filter((x) => Object.keys(SECTIONS).includes(x))
+        : null;
+      const payload = collectBackup({ dataDir: DATA_DIR, root: APP_ROOT, sections });
+      const buf = packBackup(payload, req.body?.passphrase);
+      const name = backupFilename();
+
+      audit(req, `downloaded a backup (${payload.manifest.fileCount} files: ${payload.manifest.sections.join(', ')})`);
+      res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+      res.type('application/octet-stream').send(buf);
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err.message });
+    }
+  });
+
+  /** What is in this file, and when was it made. No passphrase needed. */
+  router.post('/backup/inspect', guard, superGuard, express.raw({ type: '*/*', limit: '64mb' }), (req, res) => {
+    try {
+      const { header } = inspectBackup(req.body);
+      // The header is plaintext and unauthenticated: anyone who hands over a
+      // file controls every value in it. Filter to known fields of known
+      // types rather than spreading it into the response.
+      res.json({ ok: true, ...safeManifest(header.manifest), format: Number(header.format) || 0 });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err.message });
+    }
+  });
+
+  /**
+   * Restore onto THIS machine.
+   *
+   * Refused while WhatsApp is connected: the session files are open, and
+   * writing over them corrupts the link this backup exists to preserve. The
+   * passphrase travels in a header rather than the URL so it stays out of
+   * access logs and browser history.
+   */
+  router.post('/backup/restore', guard, superGuard, express.raw({ type: '*/*', limit: '64mb' }), async (req, res) => {
+    if (bot.isConnected()) {
+      return res.status(409).json({
+        ok: false,
+        error: 'Disconnect WhatsApp first — restoring over a live session corrupts it.',
+      });
+    }
+    try {
+      const payload = unpackBackup(req.body, req.get('x-backup-passphrase'));
+      const dryRun = req.get('x-backup-dry-run') === '1';
+      const result = restoreBackup({ payload, dataDir: DATA_DIR, root: APP_ROOT, dryRun });
+      if (!dryRun) {
+        audit(req, `restored a backup (${result.restored.length} files from ${new Date(payload.manifest?.createdAt ?? 0).toISOString().slice(0, 10)})`);
+        logger.warn(`RESTORED from backup: ${result.restored.length} files. A restart is required.`);
+      }
+      res.json({
+        ok: true, dryRun, ...result,
+        manifest: safeManifest(payload.manifest),
+        // Config and state were read into memory at boot; the process has to
+        // come back up before any of this is actually in effect.
+        restartRequired: !dryRun,
+      });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err.message });
+    }
+  });
+
+  /** What a backup would contain right now, for the portal to show up front. */
+  router.get('/backup/preview', guard, superGuard, (req, res) => {
+    try {
+      const payload = collectBackup({ dataDir: DATA_DIR, root: APP_ROOT });
+      res.json({
+        ok: true,
+        ...payload.manifest,
+        sections: Object.entries(SECTIONS).map(([key, spec]) => ({
+          key, label: spec.label, always: !!spec.always, sensitive: !!spec.sensitive,
+          files: payload.manifest.counts[key] ?? 0,
+        })),
+        minPassphrase: MIN_PASSPHRASE,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
   });
 
   /* ------------------------ cross-group members ------------------- */

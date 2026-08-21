@@ -9,7 +9,7 @@ import { FileSessionStore } from './session-store.js';
 const logger = log.scope('web');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export function createServer({ configStore, bot, queue, pluginManager, stateStore, fileLogger, alerts, lockScheduler }) {
+export function createServer({ configStore, bot, queue, pluginManager, stateStore, fileLogger, alerts, lockScheduler, dataDir, appRoot }) {
   const cfg = configStore.get();
   const app = express();
 
@@ -36,7 +36,7 @@ export function createServer({ configStore, bot, queue, pluginManager, stateStor
     },
   }));
 
-  app.use('/api', createApiRouter({ configStore, bot, queue, pluginManager, stateStore, fileLogger, alerts, lockScheduler }));
+  app.use('/api', createApiRouter({ configStore, bot, queue, pluginManager, stateStore, fileLogger, alerts, lockScheduler, dataDir, appRoot }));
 
   /* Server-sent events: live status, queue, and log lines for the dashboard. */
   app.get('/events', (req, res) => {

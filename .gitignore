@@ -9,6 +9,11 @@ data/
 .env
 .env.*
 
+# backups — a .wabak is a working copy of the WhatsApp account plus the key to
+# every stored secret. Encrypted, but never commit one.
+*.wabak
+data.pre-restore-*/
+
 # network filter CA certs (if any are dropped in)
 certs/*.crt
 certs/*.pem

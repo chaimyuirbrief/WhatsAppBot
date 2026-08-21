@@ -209,6 +209,14 @@ input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--accent); }
 .verdict { margin-top: 12px; padding: 12px; border-radius: 8px; font-weight: 600; font-size: 14px; text-align: center; }
 .verdict.good { background: rgba(37,211,102,.14); color: var(--accent); }
 .verdict.bad { background: rgba(240,85,60,.14); color: var(--danger); }
+.verdict.warn { background: rgba(227,179,65,.14); color: var(--warn); text-align: left; font-weight: 600; }
+
+/* A copy-and-paste shell snippet (the move-to-a-new-machine steps). */
+.snippet {
+  margin-top: 10px; padding: 12px 14px; border-radius: 8px; overflow-x: auto;
+  background: var(--bg); border: 1px solid var(--line); color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; line-height: 1.6;
+}
 
 /* ---------- logs ---------- */
 .logbox {
