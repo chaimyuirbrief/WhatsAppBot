@@ -46,6 +46,15 @@ export const DEFAULT_CONFIG = {
       participantMs: 4000,    // add / remove / promote / demote within one group
       crossGroupMs: 6000,     // act on the same person across many groups
       revokeMs: 2500,         // delete-for-everyone, one message
+
+      // Connection-level restraint. Not per-action gaps: these govern how
+      // often the bot re-reads the group list and how hard it retries a
+      // dropped connection. A reconnect storm after a disconnect, or a group
+      // list re-fetched every minute, is the same "too much activity" signal
+      // as a burst of edits.
+      groupRefreshMs: 600000,   // how long the cached group list stays fresh (10 min)
+      reconnectMinMs: 5000,     // first reconnect attempt waits this long
+      reconnectMaxMs: 300000,   // ...doubling up to this (5 min) and no faster
     },
   },
 

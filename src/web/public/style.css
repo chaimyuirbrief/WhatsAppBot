@@ -314,6 +314,29 @@ input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--accent); }
 }
 .jumpnav button:hover { color: var(--fg); border-color: var(--accent); }
 
+/* Filter chips (audit categories). Same pill language as the jump nav, but
+   they carry a selected state and a count. */
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chips button {
+  font-size: 12px; padding: 4px 10px; border-radius: 999px; cursor: pointer;
+  background: var(--card); color: var(--muted); border: 1px solid var(--line);
+}
+.chips button:hover { color: var(--fg); border-color: var(--accent); }
+/* #0b1f14, not var(--bg): --accent is pinned green in both themes, so
+   var(--bg) would be near-white on green in the light theme (1.8:1). */
+.chips button.on { color: #0b1f14; background: var(--accent); border-color: var(--accent); font-weight: 650; }
+.chips button .n { opacity: .65; margin-left: 5px; font-variant-numeric: tabular-nums; }
+.chips button.empty-cat { opacity: .45; }
+
+/* An admin row opens its own audit trail underneath it. */
+.item.clickable { cursor: pointer; }
+.item.clickable:hover { border-color: var(--accent); }
+.admin-trail { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.admin-trail .trail-row { display: flex; gap: 10px; justify-content: space-between;
+  padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.admin-trail .trail-row:last-child { border-bottom: 0; }
+.admin-trail .trail-when { color: var(--muted); white-space: nowrap; font-size: 12px; }
+
 .card h2 { cursor: pointer; user-select: none; }
 .card h2::before {
   content: '▾'; display: inline-block; width: 14px; font-size: 11px;

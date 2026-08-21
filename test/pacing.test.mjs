@@ -197,5 +197,71 @@ console.log('=== reactive moderation deletes are throttled too ===');
   ok(gaps.every((g) => g >= 38), `deletes are spaced by the message clock (tightest ${Math.min(...gaps)}ms)`);
 }
 
+console.log('=== reconnect backs off slowly and never runs hot ===');
+{
+  const bot = mk({ pacing: { jitterMs: 0 } });
+  const d = (n) => bot._reconnectDelayMs(n);
+  ok(d(1) === 5000, 'the first retry waits 5s');
+  ok(d(2) === 10000 && d(3) === 20000, 'then doubles');
+  ok(d(10) === 300000, 'and stops at the 5 minute cap');
+  ok(d(25) === 300000, 'which holds however many attempts have failed');
+  ok(Number.isFinite(d(1e6)), 'a huge attempt count does not overflow to Infinity');
+
+  const j = mk({ pacing: { jitterMs: 3000 } });
+  const draws = Array.from({ length: 50 }, () => j._reconnectDelayMs(1));
+  ok(Math.min(...draws) >= 5000, 'jitter never shortens a retry');
+  ok(new Set(draws).size > 5, 'and does vary it, so a fleet does not retry in lockstep');
+
+  // A gap of 0 is a legitimate choice for an action; for a reconnect it is a
+  // hot loop against a server that just hung up.
+  ok(mk({ pacing: { jitterMs: 0, reconnectMinMs: 0 } })._reconnectDelayMs(1) >= 1000,
+     'a configured 0 is floored, never a tight retry loop');
+  ok(mk({ pacing: { jitterMs: 0, reconnectMinMs: 60000, reconnectMaxMs: 1000 } })._reconnectDelayMs(3) >= 60000,
+     'min larger than max does not invert the ladder');
+  ok(mk({ pacing: { jitterMs: 0, reconnectMinMs: 'soon' } })._reconnectDelayMs(1) === 5000,
+     'a junk value falls back to the 5s default');
+}
+
+console.log('=== a bulk job cannot restart a rate-limit backoff ===');
+{
+  const bot = mk({ pacing: { jitterMs: 0 } });
+  bot.state = 'connected';
+  let fetches = 0;
+  bot.refreshGroups = async () => { fetches++; throw new Error('rate-overlimit'); };
+
+  // First scheduled refresh fails with a rate limit and books a long retry.
+  bot.scheduleGroupRefresh({ delay: 1 });
+  await new Promise((r) => setTimeout(r, 40));
+  ok(fetches === 1, 'the refresh was attempted');
+  ok(bot._groupBackoffUntil > Date.now() + 30_000, 'a long backoff is now in force');
+  const bookedFor = bot._groupBackoffUntil;
+
+  // A bulk op finishing must not drag that retry back to 10s / attempt 0.
+  bot.scheduleGroupRefresh({ delay: 5_000, force: true });
+  ok(bot._groupBackoffUntil === bookedFor, 'routine traffic does not shorten the backoff');
+  await new Promise((r) => setTimeout(r, 40));
+  ok(fetches === 1, 'and does not fire another fetch while backing off');
+  ok(bot._groupRefreshForce === true, 'but its request to force is remembered for when the backoff ends');
+}
+
+console.log('=== after a membership change the cache is actually refreshed ===');
+{
+  // Swapping the post-bulk refresh to a debounced one must not mean "never":
+  // stale membership makes bans skip groups and moderation exempt the wrong
+  // people. It has to be FORCED, since the cache is knowingly wrong.
+  const bot = mk({ pacing: { jitterMs: 0, participantMs: 0 } });
+  bot.state = 'connected';
+  const forced = [];
+  bot.refreshGroups = async ({ force = false } = {}) => { forced.push(force); return []; };
+  bot.sock = { groupParticipantsUpdate: async () => [{ jid: 'x', status: '200' }] };
+
+  await bot.modifyParticipants('g@g.us', ['15551112222'], 'remove');
+  ok(bot._groupRefreshForce === true, 'the membership change marks the cache stale');
+  await new Promise((r) => setTimeout(r, 5_200));
+  ok(forced.length === 1 && forced[0] === true,
+     'and the queued refresh forces past the 10-minute cache');
+  ok(bot._groupRefreshForce === false, 'the flag is cleared once the fetch happened');
+}
+
 console.log(`\n${'='.repeat(50)}\n  ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

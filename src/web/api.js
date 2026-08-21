@@ -11,8 +11,19 @@ import {
 import { verifyPassword } from '../util/crypto.js';
 import { fmtBytes } from '../util/format.js';
 import { aggregateMembers, memberDetail } from '../core/members.js';
+import { queryAudit, summarize, classify } from '../core/audit.js';
 
 const logger = log.scope('api');
+
+/**
+ * A page size from a query string: `fallback` when absent or nonsense, clamped
+ * to [1, max] otherwise. Never returns 0 - callers read that as "unlimited".
+ */
+function clampPage(raw, fallback, max) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) return fallback;
+  return Math.min(max, Math.floor(n));
+}
 
 export function createApiRouter({ configStore, bot, queue, pluginManager, stateStore, fileLogger, alerts, lockScheduler }) {
   const router = express.Router();
@@ -24,6 +35,9 @@ export function createApiRouter({ configStore, bot, queue, pluginManager, stateS
   // admin, so each action is attributable. Sensitive body fields are dropped.
   const auditStore = stateStore.namespace('audit');
   function audit(req, action, detail) {
+    // Tells the catch-all below that this request has described itself, so it
+    // does not also file a bare "POST /admins" beside "add admin \"bob\"".
+    req._audited = true;
     auditStore.push('events', {
       ts: Date.now(),
       user: req.session?.user?.username ?? '?',
@@ -33,10 +47,16 @@ export function createApiRouter({ configStore, bot, queue, pluginManager, stateS
       detail: detail ?? `${req.method} ${req.path}`,
     }, 2000);
   }
+  // Catch-all so nothing goes unrecorded: any mutating request that did not
+  // describe itself is filed by method and path. Routes that DID call audit()
+  // are skipped - recording both produced two entries for one action, which
+  // doubled every count and filled each admin's trail with a shadow copy.
   router.use((req, res, next) => {
     if (['POST', 'PUT', 'DELETE'].includes(req.method) && req.session?.user
         && !req.path.startsWith('/auth/')) {
-      res.on('finish', () => { if (res.statusCode < 400) audit(req, `${req.method} ${req.path}`); });
+      res.on('finish', () => {
+        if (res.statusCode < 400 && !req._audited) audit(req, `${req.method} ${req.path}`);
+      });
     }
     next();
   });
@@ -128,9 +148,63 @@ export function createApiRouter({ configStore, bot, queue, pluginManager, stateS
   });
 
   /* ------------------------------ audit --------------------------- */
+
+  /**
+   * The audit log, filtered.
+   *
+   * `?user=` narrows to one admin, `?category=` to one kind of action (see
+   * core/audit.js), `?search=` is free text, `?order=oldest` flips it.
+   * The response carries counts for EVERY category and user across the
+   * unfiltered log, so the filter controls can show totals without a second
+   * request and without the chips changing as you click them.
+   */
   router.get('/audit', guard, (req, res) => {
-    res.json(auditStore.get('events', []));
+    const all = auditStore.get('events', []);
+    // Clamp, don't coerce: `Number('-5') || 200` keeps -5, which then collapses
+    // to 0, which queryAudit reads as "no limit at all" - the opposite of what
+    // a caller asking for a small page meant.
+    const limit = clampPage(req.query.limit, 200, 1000);
+    const { events, total } = queryAudit(all, {
+      user: req.query.user ?? '',
+      category: req.query.category ?? 'all',
+      search: req.query.search ?? '',
+      order: req.query.order === 'oldest' ? 'oldest' : 'newest',
+      limit,
+      offset: Math.max(0, Number(req.query.offset) || 0),
+    });
+    res.json({
+      events: events.map((e) => ({ ...e, category: classify(e) })),
+      total,
+      shown: events.length,
+      summary: summarize(all),
+    });
   });
+
+  /**
+   * One admin's own trail. Same data as `/audit?user=`, but it also reports
+   * which account it belongs to, so the caller can tell "this admin has done
+   * nothing" apart from "no such admin".
+   */
+  router.get('/admins/:username/audit', guard, (req, res) => {
+    const account = findAdmin(configStore, req.params.username);
+    if (!account) return res.status(404).json({ error: 'no such account' });
+    const all = auditStore.get('events', []);
+    const mine = queryAudit(all, { user: account.username }).events;
+    const { events } = queryAudit(mine, {
+      category: req.query.category ?? 'all',
+      search: req.query.search ?? '',
+      limit: clampPage(req.query.limit, 50, 500),
+    });
+    res.json({
+      user: account.username,
+      role: account.role,
+      lastLogin: account.lastLogin ?? null,
+      createdAt: account.createdAt ?? null,
+      events: events.map((e) => ({ ...e, category: classify(e) })),
+      summary: summarize(mine),
+    });
+  });
+
   router.delete('/audit', guard, superGuard, (req, res) => {
     audit(req, 'cleared the audit log');
     auditStore.set('events', auditStore.get('events', []).slice(0, 1));

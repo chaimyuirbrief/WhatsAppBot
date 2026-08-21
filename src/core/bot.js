@@ -4,6 +4,7 @@ import path from 'node:path';
 import pino from 'pino';
 import qrcode from 'qrcode';
 import log from '../util/logger.js';
+import { pacedSocket } from './paced-socket.js';
 
 const logger = log.scope('bot');
 
@@ -37,10 +38,25 @@ const DEFAULT_ACTION_PACE_MS = {
   participant: 4000,    // add / remove / promote / demote within one group
   crossGroup: 6000,     // the same person across many groups
   revoke: 2500,         // delete-for-everyone, one message
+  metadata: 1500,       // reading group info - still activity, just quieter
+  // Any socket call nobody has classified. Deliberately not zero: a call that
+  // did not need slowing costs a few seconds, a call that did costs the
+  // account, so the default has to be the safe one.
+  default: 3000,
 };
 
 // Random extra added to every gap. An exact interval is a signature in itself.
 const DEFAULT_PACE_JITTER_MS = 2000;
+
+// Connection-level restraint: how long a cached group list stays good, and how
+// slowly a dropped connection is retried. A reconnect storm is the same "too
+// much activity" signal as a burst of edits, aimed at an endpoint that is
+// already unhappy.
+const DEFAULT_GROUP_REFRESH_MS = 600_000;   // 10 minutes
+const DEFAULT_RECONNECT_MIN_MS = 5_000;
+const DEFAULT_RECONNECT_MAX_MS = 300_000;   // 5 minutes
+// However the config is written, reconnects never come faster than this.
+const MIN_RECONNECT_FLOOR_MS = 1_000;
 
 // Bulk lock/unlock has its own knob (`lockdown.paceMs`) but the same default.
 const DEFAULT_LOCKDOWN_PACE_MS = DEFAULT_ACTION_PACE_MS.groupSetting;
@@ -110,13 +126,39 @@ export class WhatsAppBot extends EventEmitter {
     this._lastGroupFetch = 0;
     this._groupTimer = null;
     this._groupBusy = false;
+    // Set while a rate-limit backoff is pending, so routine traffic cannot
+    // shorten it. Zero means no backoff in force.
+    this._groupBackoffUntil = 0;
+    // A caller asked for a forced refresh; carried until one actually happens.
+    this._groupRefreshForce = false;
     // When the bot last sent anything. Every paced action waits on this one
     // clock, so all of them share a single rate limit.
     this._lastActionAt = 0;
+    // Stack of in-force pace remaps (see _withPace). Innermost wins.
+    this._paceScopes = [];
     this._lockAllRun = null;
   }
 
   get config() { return this.configStore.get(); }
+
+  /**
+   * The socket, paced.
+   *
+   * This is an accessor rather than a plain field on purpose. Wrapping at the
+   * one place the socket is created would leave the same hole the pacing was
+   * meant to close: any other assignment - a reconnect path, a test, code
+   * written next year - would quietly hand back an unpaced socket, and
+   * everything would keep working, just too fast. Assigning here wraps, so
+   * there is no way to hold an unpaced socket by accident.
+   */
+  get sock() { return this._sock; }
+
+  set sock(raw) {
+    this._rawSock = raw ?? null;
+    this._sock = raw
+      ? pacedSocket(raw, (kind) => this._holdOff(this._actionGapMs(kind)))
+      : raw;
+  }
 
   _setState(state, extra = {}) {
     this.state = state;
@@ -275,7 +317,11 @@ export class WhatsAppBot extends EventEmitter {
 
         if (this.config.whatsapp.autoReconnect) {
           this.reconnectAttempts += 1;
-          const delay = Math.min(60_000, 2_000 * 2 ** Math.min(this.reconnectAttempts, 5));
+          // Backing off slowly matters as much as pacing does: a bot that
+          // retries every couple of seconds through an outage - or through a
+          // block - is hammering, and it is hammering the one endpoint that
+          // is already unhappy. Start at 5s, double, stop at 5 minutes.
+          const delay = this._reconnectDelayMs(this.reconnectAttempts);
           logger.info(`reconnecting in ${Math.round(delay / 1000)}s (attempt ${this.reconnectAttempts})`);
           this._setState('connecting');
           await sleep(delay);
@@ -408,11 +454,43 @@ export class WhatsAppBot extends EventEmitter {
     };
   }
 
-  /** Space out outbound messages so the bot does not flood a group. */
-  async _pace() {
+  /**
+   * The gap for an ordinary message, from the min/max window. Kept separate
+   * from the administrative gaps because it is a range rather than a floor
+   * plus jitter - it predates them and reads naturally in the settings UI.
+   */
+  _messageGapMs() {
     const { minActionDelayMs: min = 0, maxActionDelayMs: max = 0 } = this.config.whatsapp;
-    if (max <= 0) return this._holdOff(0);
-    return this._holdOff(min + Math.random() * Math.max(0, max - min));
+    if (max <= 0) return 0;
+    return min + Math.random() * Math.max(0, max - min);
+  }
+
+  /**
+   * Run `fn` with some pace kinds remapped, so a bulk job can say what its
+   * calls really are without every call site re-implementing pacing. A value
+   * may be another kind's name or a number of milliseconds.
+   *
+   * Example: removing one person from forty groups is a stream of
+   * `groupParticipantsUpdate` calls, which the socket would otherwise pace as
+   * ordinary membership changes. `{ participant: 'crossGroup' }` says what it
+   * actually is, and the wider gap applies.
+   */
+  async _withPace(map, fn) {
+    this._paceScopes.push(map);
+    try { return await fn(); }
+    finally {
+      const i = this._paceScopes.lastIndexOf(map);
+      if (i !== -1) this._paceScopes.splice(i, 1);
+    }
+  }
+
+  /** The innermost scoped remap for `kind`, or undefined. */
+  _scopedPace(kind) {
+    for (let i = this._paceScopes.length - 1; i >= 0; i--) {
+      const v = this._paceScopes[i]?.[kind];
+      if (v !== undefined) return v;
+    }
+    return undefined;
   }
 
   /**
@@ -435,6 +513,25 @@ export class WhatsAppBot extends EventEmitter {
     return fallback;
   }
 
+  /**
+   * How long to wait before reconnect attempt `n` (1-based): exponential from
+   * `reconnectMinMs`, capped at `reconnectMaxMs`, with jitter so a fleet of
+   * bots on one network does not retry in lockstep.
+   */
+  _reconnectDelayMs(n) {
+    const p = this.config.whatsapp?.pacing ?? {};
+    // Floored, unlike the action gaps: a deliberate 0 there means "send it
+    // now", which is a choice. Here it would mean reconnecting in a tight
+    // loop against a server that just hung up - never something anyone wants.
+    const min = Math.max(
+      MIN_RECONNECT_FLOOR_MS,
+      this._paceValue(p.reconnectMinMs, DEFAULT_RECONNECT_MIN_MS, 'reconnectMin', { warnOnZero: false }),
+    );
+    const max = Math.max(min, this._paceValue(p.reconnectMaxMs, DEFAULT_RECONNECT_MAX_MS, 'reconnectMax', { warnOnZero: false }));
+    const step = Math.min(max, min * 2 ** Math.max(0, Math.min(n - 1, 20)));
+    return Math.max(step, this._jitter(step));
+  }
+
   /** Add the configured random jitter to a gap. A zero gap stays zero. */
   _jitter(base) {
     if (!(base > 0)) return 0;
@@ -449,17 +546,23 @@ export class WhatsAppBot extends EventEmitter {
    * specific pace, not a config value that might be a typo.
    */
   _actionGapMs(kind, override) {
-    let base;
     if (typeof override === 'number' && Number.isFinite(override) && override >= 0) {
-      base = override;
-    } else {
-      base = this._paceValue(
-        this.config.whatsapp?.pacing?.[`${kind}Ms`],
-        DEFAULT_ACTION_PACE_MS[kind] ?? 0,
-        kind,
-      );
+      return this._jitter(override);
     }
-    return this._jitter(base);
+    // A bulk job may have said what these calls really are.
+    const scoped = this._scopedPace(kind);
+    if (typeof scoped === 'number') return this._jitter(scoped);
+    const k = typeof scoped === 'string' ? scoped : kind;
+
+    // Ordinary messages keep their own min/max window, and carry their own
+    // randomness, so they are not jittered a second time.
+    if (k === 'message') return this._messageGapMs();
+
+    return this._jitter(this._paceValue(
+      this.config.whatsapp?.pacing?.[`${k}Ms`],
+      DEFAULT_ACTION_PACE_MS[k] ?? DEFAULT_ACTION_PACE_MS.default,
+      k,
+    ));
   }
 
   /**
@@ -493,7 +596,6 @@ export class WhatsAppBot extends EventEmitter {
 
   async react(msg, emoji) {
     const sock = this._requireSock();
-    await this._pace();
     await sock.sendMessage(msg.chatJid, { react: { text: emoji, key: msg.key } });
     logger.debug(`reacted ${emoji} on ${msg.id}`);
   }
@@ -507,7 +609,6 @@ export class WhatsAppBot extends EventEmitter {
    */
   async sendText(jid, text, { quoted = null, mentions = null, groupMentions = null } = {}) {
     const sock = this._requireSock();
-    await this._pace();
     const content = { text };
     if (mentions?.length) content.mentions = mentions;
     if (groupMentions?.length) {
@@ -554,7 +655,6 @@ export class WhatsAppBot extends EventEmitter {
     const sock = this._requireSock();
     const name = fileName ?? path.basename(filePath);
     const stat = fs.statSync(filePath);
-    await this._pace();
     logger.info(`sending document ${name} (${(stat.size / 1048576).toFixed(1)} MB) -> ${jid}`);
     // Passing a path lets Baileys stream from disk instead of buffering the
     // whole file in memory, which matters a lot on a small server.
@@ -612,21 +712,49 @@ export class WhatsAppBot extends EventEmitter {
   /**
    * Queue a group refresh. Repeated calls collapse into one, which matters
    * because groups.update can fire dozens of times in a burst.
+   *
+   * `force` bypasses the cache when the caller KNOWS it is stale - it just
+   * changed the membership itself. That is safe now that the socket paces its
+   * own calls: a forced fetch here is one paced read, not the unpaced burst
+   * that used to make this cycle refresh -> rate-limit -> back off -> refresh.
+   * A plain groups.update still refreshes unforced, because WhatsApp emits
+   * those constantly and they rarely mean anything changed for us.
+   *
+   * A rate-limit backoff is never shortened or restarted by routine traffic.
+   * Letting a bulk job reset the ladder to 10s and attempt 0 would turn "back
+   * off for sixteen minutes" into "come straight back", which is the retry
+   * storm the backoff exists to prevent.
    */
-  scheduleGroupRefresh(delay = 10_000, attempt = 0) {
+  scheduleGroupRefresh(opts = {}) {
+    const { delay = 10_000, attempt = 0, force = false } =
+      (typeof opts === 'number' ? { delay: opts } : opts) ?? {};
+
+    // Whatever anyone has asked for since the last fetch carries over.
+    if (force) this._groupRefreshForce = true;
+
+    const now = Date.now();
+    if (attempt === 0 && this._groupBackoffUntil > now) {
+      logger.debug(`group refresh deferred: backing off for another ${Math.round((this._groupBackoffUntil - now) / 1000)}s`);
+      return;
+    }
+
     clearTimeout(this._groupTimer);
+    this._groupBackoffUntil = attempt > 0 ? now + delay : 0;
     this._groupTimer = setTimeout(() => {
-      // Deliberately NOT forced. WhatsApp emits groups.update constantly, and
-      // forcing here bypassed the cache and produced a permanent cycle of
-      // refresh -> rate-limit -> back off -> refresh. Only an explicit press
-      // of Refresh in the UI forces a fetch.
-      this.refreshGroups().catch((err) => {
+      const wanted = this._groupRefreshForce;
+      this._groupRefreshForce = false;
+      this._groupBackoffUntil = 0;
+      this.refreshGroups({ force: wanted }).catch((err) => {
+        // The fetch never happened, so whoever asked for a forced one still
+        // needs it after the backoff.
+        if (wanted) this._groupRefreshForce = true;
         const rateLimited = /rate.?overlimit|429|too many/i.test(err.message ?? '');
         if (rateLimited && attempt < 5) {
-          // Back off properly: 30s, 1m, 2m, 4m, 8m.
-          const backoff = Math.min(480_000, 30_000 * 2 ** attempt);
+          // Being told to slow down is the one moment to be generous about
+          // it: 1m, 2m, 4m, 8m, 16m rather than coming straight back.
+          const backoff = Math.min(1_800_000, 60_000 * 2 ** attempt);
           logger.warn(`group list rate-limited by WhatsApp, retrying in ${Math.round(backoff / 1000)}s`);
-          this.scheduleGroupRefresh(backoff, attempt + 1);
+          this.scheduleGroupRefresh({ delay: backoff, attempt: attempt + 1 });
         } else {
           logger.warn(`group refresh failed: ${err.message}`);
         }
@@ -636,12 +764,17 @@ export class WhatsAppBot extends EventEmitter {
   }
 
   /**
-   * Fetch the group list. Cached for a minute - the UI can ask freely, and
-   * WhatsApp will not see a request per page load.
+   * Fetch the group list. Cached for ten minutes - the UI can ask freely, and
+   * WhatsApp will not see a request per page load. Only an explicit press of
+   * Refresh forces a fetch; everything internal goes through
+   * `scheduleGroupRefresh`, which respects this cache.
    */
   async refreshGroups({ force = false } = {}) {
     if (this._groupBusy) return this.groups();
-    if (!force && Date.now() - this._lastGroupFetch < 300_000) return this.groups();
+    const cacheMs = this._paceValue(
+      this.config.whatsapp?.pacing?.groupRefreshMs, DEFAULT_GROUP_REFRESH_MS, 'groupRefresh',
+    );
+    if (!force && Date.now() - this._lastGroupFetch < cacheMs) return this.groups();
 
     const sock = this._requireSock();
     this._groupBusy = true;
@@ -725,12 +858,15 @@ export class WhatsAppBot extends EventEmitter {
    * every group's description inside a minute is not something a person does.
    */
   async applyDescriptions(plan = [], { paceMs } = {}) {
+    return this._withPace({ description: paceMs }, () => this._applyDescriptions(plan));
+  }
+
+  async _applyDescriptions(plan = []) {
     const results = [];
     for (const item of plan ?? []) {
       const jid = item?.jid;
       const subject = this.groupCache.get(jid)?.subject ?? jid;
       if (!jid) { results.push({ jid, ok: false, error: 'missing jid' }); continue; }
-      await this._holdOff(this._actionGapMs('description', paceMs));
       try {
         await this.setGroupDescription(jid, String(item.desc ?? ''));
         const cached = this.groupCache.get(jid);
@@ -788,6 +924,10 @@ export class WhatsAppBot extends EventEmitter {
    * the member list.
    */
   async modifyParticipants(jid, targets, action, { paceMs } = {}) {
+    return this._withPace({ participant: paceMs }, () => this._modifyParticipants(jid, targets, action));
+  }
+
+  async _modifyParticipants(jid, targets, action) {
     const sock = this._requireSock();
     if (!['add', 'remove', 'promote', 'demote'].includes(action)) {
       throw new Error(`invalid participant action: ${action}`);
@@ -800,12 +940,13 @@ export class WhatsAppBot extends EventEmitter {
     const results = [];
     for (let i = 0; i < jids.length; i += 5) {
       const chunk = jids.slice(i, i + 5);
-      await this._holdOff(this._actionGapMs('participant', paceMs));
       const res = await sock.groupParticipantsUpdate(jid, chunk, action);
       for (const r of res ?? []) results.push({ jid: r.jid, status: r.status });
     }
     logger.info(`${action} ${jids.length} participant(s) in ${jid}`);
-    this.refreshGroups({ force: true }).catch(() => {});
+    // We changed the membership, so the cache IS stale: force it, but debounced
+    // and through the paced socket rather than as an immediate extra call.
+    this.scheduleGroupRefresh({ delay: 5_000, force: true });
     return results;
   }
 
@@ -870,7 +1011,10 @@ export class WhatsAppBot extends EventEmitter {
 
     logger.info(`${locked ? 'locking' : 'unlocking'} ${total} group(s) — one at a time, ${gap}ms apart`);
     onProgress?.({ done: 0, total, jid: null, subject: null });
+    return this._withPace({ groupSetting: gap }, () => this._walkGroupsLocked(locked, all, skip, total, onProgress));
+  }
 
+  async _walkGroupsLocked(locked, all, skip, total, onProgress) {
     const results = [];
     let done = 0;
     for (const g of all) {
@@ -881,7 +1025,6 @@ export class WhatsAppBot extends EventEmitter {
       // Wait before each group rather than after, so nothing is left sleeping
       // once the last one is done, and so the gap is shared with whatever
       // else the bot is doing.
-      await this._holdOff(this._jitter(gap));
       try {
         await this.setGroupLocked(g.jid, locked);
         results.push({ jid: g.jid, subject: g.subject, ok: true });
@@ -912,6 +1055,10 @@ export class WhatsAppBot extends EventEmitter {
    * it is not, that group's deletions simply fail and are reported.
    */
   async deleteRecentMessagesFrom({ number = null, jid = null, paceMs } = {}) {
+    return this._withPace({ revoke: paceMs }, () => this._deleteRecentMessagesFrom({ number, jid }));
+  }
+
+  async _deleteRecentMessagesFrom({ number = null, jid = null } = {}) {
     if (!this.messageIndex) return { deleted: 0, failed: 0, groups: [] };
     const sock = this._requireSock();
     const targets = this.messageIndex.forSender({ number, jid });
@@ -921,7 +1068,6 @@ export class WhatsAppBot extends EventEmitter {
       // Mass delete-for-everyone is the loudest thing this bot can do, so it
       // is also the slowest: one revoke at a time, at about the speed someone
       // long-pressing each message would manage.
-      await this._holdOff(this._actionGapMs('revoke', paceMs));
       try {
         await sock.sendMessage(t.groupJid, { delete: t.key });
         deleted++;
@@ -940,11 +1086,19 @@ export class WhatsAppBot extends EventEmitter {
   }
 
   async banFromAllGroups(number, { wipeMessages = true, paceMs } = {}) {
+    // Every removal here is the SAME person in yet another group - a pattern
+    // nobody produces by hand quickly - so these participant updates get the
+    // wider cross-group gap rather than the ordinary one.
+    return this._withPace({ participant: paceMs ?? 'crossGroup', revoke: paceMs },
+      () => this._banFromAllGroups(number, { wipeMessages }));
+  }
+
+  async _banFromAllGroups(number, { wipeMessages = true } = {}) {
     // Wipe their recent posts BEFORE removing them - once they are out of the
     // group the revoke can be rejected, and the message keys reference them.
     let wiped = { deleted: 0, failed: 0, groups: [] };
     if (wipeMessages) {
-      try { wiped = await this.deleteRecentMessagesFrom({ number, paceMs }); }
+      try { wiped = await this.deleteRecentMessagesFrom({ number }); }
       catch (err) { logger.warn(`could not wipe messages for +${number}: ${err.message}`); }
     }
     const results = [];
@@ -953,7 +1107,6 @@ export class WhatsAppBot extends EventEmitter {
       if (!info.isMember) continue;                    // only where they actually are
       // The same person being removed from group after group is a pattern
       // nobody produces by hand quickly, so this is the widest gap of all.
-      await this._holdOff(this._actionGapMs('crossGroup', paceMs));
       try {
         const status = await this._rawParticipant(g.jid, number, 'remove');
         results.push({ jid: g.jid, subject: g.subject, status: status ?? 'removed' });
@@ -961,7 +1114,9 @@ export class WhatsAppBot extends EventEmitter {
         results.push({ jid: g.jid, subject: g.subject, error: err.message });
       }
     }
-    this.refreshGroups({ force: true }).catch(() => {});
+    // We changed the membership, so the cache IS stale: force it, but debounced
+    // and through the paced socket rather than as an immediate extra call.
+    this.scheduleGroupRefresh({ delay: 5_000, force: true });
     logger.info(`banned +${number} from ${results.length} group(s)`);
     results.wiped = wiped;
     return results;
@@ -969,9 +1124,13 @@ export class WhatsAppBot extends EventEmitter {
 
   /** add / promote / demote a number across a chosen set of groups. */
   async participantAcrossGroups(number, groupJids, action, { paceMs } = {}) {
+    return this._withPace({ participant: paceMs ?? 'crossGroup' },
+      () => this._participantAcrossGroups(number, groupJids, action));
+  }
+
+  async _participantAcrossGroups(number, groupJids, action) {
     const results = [];
     for (const jid of groupJids) {
-      await this._holdOff(this._actionGapMs('crossGroup', paceMs));
       try {
         const status = await this._rawParticipant(jid, number, action);
         results.push({ jid, subject: this.groupCache.get(jid)?.subject ?? jid, status: status ?? 'ok' });
@@ -979,7 +1138,9 @@ export class WhatsAppBot extends EventEmitter {
         results.push({ jid, subject: this.groupCache.get(jid)?.subject ?? jid, error: err.message });
       }
     }
-    this.refreshGroups({ force: true }).catch(() => {});
+    // We changed the membership, so the cache IS stale: force it, but debounced
+    // and through the paced socket rather than as an immediate extra call.
+    this.scheduleGroupRefresh({ delay: 5_000, force: true });
     logger.info(`${action} +${number} across ${groupJids.length} group(s)`);
     return results;
   }
@@ -1025,7 +1186,6 @@ export class WhatsAppBot extends EventEmitter {
     const sock = this._requireSock();
     const key = msg?.key ?? msg;
     if (!key?.id || !key?.remoteJid) throw new Error('no message key');
-    await this._pace();
     await sock.sendMessage(key.remoteJid, {
       delete: {
         remoteJid: key.remoteJid,

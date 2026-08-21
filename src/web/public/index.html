@@ -435,7 +435,8 @@
     <section class="panel" id="tab-admins">
       <div class="card" id="card-admins">
         <h2>Admin accounts <span class="hint">super-admin only</span></h2>
-        <p class="hint">Each admin signs in with their own login; their portal actions are attributed in the audit log. The super-admin (you) manages accounts here.</p>
+        <p class="hint">Each admin signs in with their own login; their portal actions are attributed in the audit log.
+        Click an account to see what that admin has been doing. The super-admin (you) manages accounts here.</p>
         <div id="admins-list" class="list"></div>
         <h3>Add an admin</h3>
         <div class="row gap wrap">
@@ -453,11 +454,20 @@
     <section class="panel" id="tab-logs">
       <div class="card">
         <h2>Portal audit log</h2>
-        <p class="hint">Every action taken in this portal, with which admin did it.</p>
-        <div class="row gap" style="margin-bottom:10px">
+        <p class="hint">Every action taken in this portal, with which admin did it.
+        Pick a kind of action below to narrow it down.</p>
+        <div id="audit-cats" class="chips" style="margin-bottom:10px"></div>
+        <div class="row gap wrap" style="margin-bottom:10px">
+          <input id="audit-search" placeholder="search actions…" class="flex1" style="margin:0">
+          <select id="audit-user" style="width:auto;margin:0"><option value="">all admins</option></select>
+          <select id="audit-order" style="width:auto;margin:0">
+            <option value="newest">newest first</option>
+            <option value="oldest">oldest first</option>
+          </select>
           <button class="btn small" id="btn-audit-refresh">Refresh</button>
           <button class="btn small danger superadmin-only hidden" id="btn-audit-clear">Clear</button>
         </div>
+        <div id="audit-count" class="muted small" style="margin-bottom:8px"></div>
         <div id="audit-list" class="list"><div class="empty">No actions recorded yet.</div></div>
       </div>
 

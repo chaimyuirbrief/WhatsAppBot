@@ -1114,25 +1114,88 @@ function applyUser() {
   document.querySelectorAll('.superadmin-only').forEach((el) => el.classList.toggle('hidden', !isSuper));
 }
 
+/** Which admin's trail is open, so a reload does not collapse it. */
+let ADMIN_OPEN = null;
+let adminTrailReq = 0;
+
 async function loadAdmins() {
   const box = $('admins-list');
   if (!box) return;
   try {
     const r = await api('GET', '/admins');
-    box.innerHTML = r.admins.map((a) => `
-      <div class="item compact">
+    box.innerHTML = r.admins.map((a) => {
+      const u = esc(a.username);
+      const js = jsStr(a.username);
+      return `
+      <div class="item compact clickable" onclick="adminToggle(${js})" title="Show what this admin has done">
         <div class="item-top">
-          <span class="item-title">${esc(a.username)} ${a.role === 'superadmin' ? '<span class="tag done">super-admin</span>' : '<span class="tag">admin</span>'}</span>
+          <span class="item-title">${u} ${a.role === 'superadmin' ? '<span class="tag done">super-admin</span>' : '<span class="tag">admin</span>'}</span>
           ${CURRENT_USER?.role === 'superadmin' ? `
-            <span class="row gap">
-              <button class="btn tiny" onclick="adminReset('${esc(a.username)}')">Reset password</button>
-              ${a.username !== CURRENT_USER.username ? `<button class="btn tiny danger" onclick="adminRemove('${esc(a.username)}')">Remove</button>` : ''}
+            <span class="row gap" onclick="event.stopPropagation()">
+              <button class="btn tiny" onclick="adminReset(${js})">Reset password</button>
+              ${a.username !== CURRENT_USER.username ? `<button class="btn tiny danger" onclick="adminRemove(${js})">Remove</button>` : ''}
             </span>` : ''}
         </div>
         <div class="item-sub">${a.lastLogin ? 'last login ' + new Date(a.lastLogin).toLocaleString() : 'never signed in'}</div>
-      </div>`).join('');
+        <div class="admin-trail" id="trail-${cssId(a.username)}" style="display:none"
+             onclick="event.stopPropagation()"></div>
+      </div>`;
+    }).join('');
+    // Re-open whatever was open before this reload.
+    if (ADMIN_OPEN && r.admins.some((a) => a.username === ADMIN_OPEN)) {
+      const who = ADMIN_OPEN; ADMIN_OPEN = null; adminToggle(who);
+    } else {
+      ADMIN_OPEN = null;
+    }
   } catch { /* non-super admins can still see their own via /admins */ }
 }
+
+/** Open (or close) one admin's audit trail underneath their row. */
+window.adminToggle = async (username) => {
+  const el = $(`trail-${cssId(username)}`);
+  if (!el) return;
+  if (ADMIN_OPEN === username) {           // clicking the open one closes it
+    el.style.display = 'none';
+    el.innerHTML = '';
+    ADMIN_OPEN = null;
+    return;
+  }
+  // Only one open at a time - two trails side by side is just the Logs tab.
+  if (ADMIN_OPEN) {
+    const prev = $(`trail-${cssId(ADMIN_OPEN)}`);
+    if (prev) { prev.style.display = 'none'; prev.innerHTML = ''; }
+  }
+  ADMIN_OPEN = username;
+  el.style.display = '';
+  el.innerHTML = '<div class="muted small">loading…</div>';
+  const mine = ++adminTrailReq;
+  try {
+    const r = await api('GET', `/admins/${encodeURIComponent(username)}/audit?limit=25`);
+    // Toggling the same admin twice starts two fetches at one element; only
+    // the newest may render, and only while that admin is still the open one.
+    if (mine !== adminTrailReq || ADMIN_OPEN !== username) return;
+    const busiest = r.summary.categories.filter((c) => c.count).sort((a, b) => b.count - a.count);
+    el.innerHTML = `
+      <div class="row gap wrap" style="justify-content:space-between;align-items:baseline">
+        <span class="muted small">
+          ${r.summary.total} action${r.summary.total === 1 ? '' : 's'} on record${r.summary.lastAt ? ` · last ${new Date(r.summary.lastAt).toLocaleString()}` : ''}
+        </span>
+        ${r.summary.total ? `<button class="btn tiny" onclick="event.stopPropagation();auditShowUser(${jsStr(username)})">Open in Logs →</button>` : ''}
+      </div>
+      ${busiest.length ? `<div class="chips" style="margin:8px 0">${busiest
+        .map((c) => `<button class="empty-cat" style="cursor:default">${esc(c.icon)} ${esc(c.label)}<span class="n">${c.count}</span></button>`)
+        .join('')}</div>` : ''}
+      ${r.events.length
+        ? r.events.map((e) => `
+            <div class="trail-row">
+              <span>${esc((AUDIT_CAT_LABELS[e.category] ?? { icon: '•' }).icon)} ${esc(e.action)}</span>
+              <span class="trail-when">${new Date(e.ts).toLocaleString()}</span>
+            </div>`).join('')
+        : '<div class="empty">This admin has not done anything yet.</div>'}`;
+  } catch (err) {
+    if (mine === adminTrailReq) el.innerHTML = `<div class="verdict bad">${esc(err.message)}</div>`;
+  }
+};
 
 $('na-add')?.addEventListener('click', async () => {
   const username = $('na-user').value.trim(), password = $('na-pass').value, role = $('na-role').value;
@@ -1156,23 +1219,129 @@ window.adminReset = async (u) => {
   catch (err) { toast(err.message, true); }
 };
 
+/* The audit log's current filter. `category` is a key from core/audit.js. */
+const AUDIT_FILTER = { category: 'all', user: '', search: '', order: 'newest' };
+let auditSearchTimer = null;
+
+/** One audit entry, shared by the log list and an admin's own trail. */
+function auditRow(e) {
+  const cat = AUDIT_CAT_LABELS[e.category] ?? { icon: '•', label: 'Other' };
+  return `
+    <div class="item compact">
+      <div class="item-top">
+        <span class="item-title">${esc(e.user)} <span class="muted">${e.role === 'superadmin' ? '(super)' : ''}</span></span>
+        <span class="muted small">${new Date(e.ts).toLocaleString()}</span>
+      </div>
+      <div class="item-sub"><span title="${esc(cat.label)}">${esc(cat.icon)}</span> ${esc(e.action)}${e.detail && e.detail !== e.action ? ` · ${esc(e.detail)}` : ''}</div>
+    </div>`;
+}
+
+/** Filled from the server's summary so the two never drift apart. */
+let AUDIT_CAT_LABELS = {};
+
+function renderAuditChips(summary) {
+  const box = $('audit-cats');
+  if (!box || !summary) return;
+  AUDIT_CAT_LABELS = Object.fromEntries(summary.categories.map((c) => [c.key, c]));
+  // jsStr, not esc: this is a JS string literal inside an HTML attribute, and
+  // category keys are derived from request paths now rather than a fixed list.
+  const chip = (key, label, icon, count, always) => (count || always
+    ? `<button class="${AUDIT_FILTER.category === key ? 'on' : ''}${count ? '' : ' empty-cat'}"
+         onclick="auditFilterBy(${jsStr(key)})">${esc(icon)} ${esc(label)}<span class="n">${count}</span></button>`
+    : '');
+  box.innerHTML = [
+    chip('all', 'Everything', '📜', summary.total, true),
+    // Only offer a kind of action that has actually happened - a wall of
+    // zero-count chips is noise, not a filter. The one exception is the
+    // category currently selected, which must stay visible to be unselected.
+    ...summary.categories.map((c) => chip(c.key, c.label, c.icon, c.count, AUDIT_FILTER.category === c.key)),
+  ].join('');
+}
+
+function renderAuditUsers(summary) {
+  const sel = $('audit-user');
+  if (!sel || !summary) return;
+  const want = AUDIT_FILTER.user;
+  // The scheduler files its own events under "lockdown:schedule". Those are
+  // not people, so they go in their own group rather than being offered as
+  // admins to filter by.
+  const people = summary.users.filter((u) => !u.system);
+  const system = summary.users.filter((u) => u.system);
+  const opt = (u) => `<option value="${esc(u.user)}"${u.user === want ? ' selected' : ''}>${esc(u.user)} (${u.count})</option>`;
+  // A selected admin with nothing on record is not in `users`; keep an option
+  // for them or the select silently blanks and reads as "all admins".
+  const missing = want && !summary.users.some((u) => u.user === want)
+    ? `<option value="${esc(want)}" selected>${esc(want)} (0)</option>` : '';
+
+  sel.innerHTML = `<option value="">all admins (${summary.total})</option>`
+    + missing
+    + (people.length ? `<optgroup label="admins">${people.map(opt).join('')}</optgroup>` : '')
+    + (system.length ? `<optgroup label="automatic">${system.map(opt).join('')}</optgroup>` : '');
+  sel.value = want;
+}
+
+let auditReq = 0;
+
 async function loadAudit() {
   const box = $('audit-list');
   if (!box) return;
+  // Every control funnels through here, so a slow earlier response could land
+  // after a newer one and put the wrong list on screen. Only the newest
+  // request is allowed to render.
+  const mine = ++auditReq;
   try {
-    const evs = await api('GET', '/audit');
-    if (!evs.length) { box.innerHTML = '<div class="empty">No actions recorded yet.</div>'; return; }
-    box.innerHTML = evs.map((e) => `
-      <div class="item compact">
-        <div class="item-top">
-          <span class="item-title">${esc(e.user)} <span class="muted">${e.role === 'superadmin' ? '(super)' : ''}</span></span>
-          <span class="muted small">${new Date(e.ts).toLocaleString()}</span>
-        </div>
-        <div class="item-sub">${esc(e.action)}${e.detail && e.detail !== e.action ? ` · ${esc(e.detail)}` : ''}</div>
-      </div>`).join('');
-  } catch (err) { box.innerHTML = `<div class="verdict bad">${esc(err.message)}</div>`; }
+    const qs = new URLSearchParams({
+      category: AUDIT_FILTER.category,
+      user: AUDIT_FILTER.user,
+      search: AUDIT_FILTER.search,
+      order: AUDIT_FILTER.order,
+      limit: '200',
+    });
+    const r = await api('GET', `/audit?${qs}`);
+    if (mine !== auditReq) return;          // a newer filter already won
+    renderAuditChips(r.summary);
+    renderAuditUsers(r.summary);
+
+    // Say plainly how much of the log is on screen: how many matched, how many
+    // exist, and whether the page was truncated. "2 actions" on its own reads
+    // like the whole log is two actions long.
+    const filtered = AUDIT_FILTER.category !== 'all' || !!AUDIT_FILTER.user || !!AUDIT_FILTER.search;
+    const whole = r.summary?.total ?? r.total;
+    const n = (x) => `${x} action${x === 1 ? '' : 's'}`;
+    $('audit-count').textContent = !whole ? ''
+      : r.shown < r.total ? `showing ${r.shown} of ${n(r.total)}${filtered ? ` matching, out of ${whole}` : ''}`
+      : filtered ? `${r.total} of ${n(whole)} match this filter`
+      : n(whole);
+    box.innerHTML = r.events.length
+      ? r.events.map(auditRow).join('')
+      : `<div class="empty">${filtered ? 'No actions match this filter.' : 'No actions recorded yet.'}</div>`;
+  } catch (err) {
+    if (mine === auditReq) box.innerHTML = `<div class="verdict bad">${esc(err.message)}</div>`;
+  }
 }
+
+window.auditFilterBy = (key) => {
+  AUDIT_FILTER.category = AUDIT_FILTER.category === key ? 'all' : key;
+  loadAudit();
+};
+/** Jump to the Logs tab already filtered to one admin. */
+window.auditShowUser = (user) => {
+  AUDIT_FILTER.user = user;
+  AUDIT_FILTER.category = 'all';
+  AUDIT_FILTER.search = '';
+  if ($('audit-search')) $('audit-search').value = '';
+  goTab('logs');
+  loadAudit();
+};
+
 $('btn-audit-refresh')?.addEventListener('click', loadAudit);
+$('audit-user')?.addEventListener('change', (ev) => { AUDIT_FILTER.user = ev.target.value; loadAudit(); });
+$('audit-order')?.addEventListener('change', (ev) => { AUDIT_FILTER.order = ev.target.value; loadAudit(); });
+$('audit-search')?.addEventListener('input', (ev) => {
+  AUDIT_FILTER.search = ev.target.value;
+  clearTimeout(auditSearchTimer);
+  auditSearchTimer = setTimeout(loadAudit, 250);
+});
 $('btn-audit-clear')?.addEventListener('click', async () => {
   await api('DELETE', '/audit'); loadAudit(); toast('Audit log cleared');
 });
@@ -1379,6 +1548,26 @@ function connectEvents() {
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+/**
+ * A value as a quoted JS string literal safe to sit inside an inline
+ * onclick="..." attribute. Two encodings, in this order: JSON.stringify makes
+ * it a valid JS literal, esc then makes it survive the HTML attribute.
+ * Interpolating a bare value into a handler is how a name with an apostrophe
+ * breaks the page (or worse).
+ */
+function jsStr(v) {
+  return esc(JSON.stringify(String(v ?? '')));
+}
+
+/**
+ * A username as a DOM id fragment. Injective on purpose - mapping every odd
+ * character to '_' would collide "a.b" with "a_b", and two admins would then
+ * share one panel.
+ */
+function cssId(v) {
+  return String(v ?? '').replace(/[^a-zA-Z0-9-]/g, (c) => `_${c.charCodeAt(0)}_`);
 }
 function fmtDur(sec) {
   const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);

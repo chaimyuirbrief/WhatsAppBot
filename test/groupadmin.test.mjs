@@ -108,7 +108,12 @@ console.log('=== the default pace is 5s between groups, and it waits between the
   // Measured off the last call rather than the total, so a reinstated trailing
   // sleep fails this outright instead of hiding inside a wall-clock budget.
   ok(tail<120,`no wait after the last group (returned ${tail}ms after its call, < the 120ms pace)`);
-  ok(at[1].t-at[0].t>=120 && at[2].t-at[1].t>=120,'each gap is at least the configured pace');
+  // -2ms: the gap is enforced against Date.now() inside _holdOff and these
+  // stamps are taken a microtask later at 1ms resolution, so a measured gap
+  // can read a hair short of one that was actually honoured. Still two orders
+  // of magnitude away from the ~0ms an unpaced run would show.
+  const gaps=[at[1].t-at[0].t,at[2].t-at[1].t];
+  ok(gaps.every((g)=>g>=118),`each gap is at least the configured pace (${gaps.join('ms, ')}ms)`);
   ok(seen[0].done===0 && seen[0].total===3,'progress opens with 0 of the total');
   ok(seen[seen.length-1].done===3,'progress ends on the last group');
   ok(seen[2].subject==='Two','progress names the group just done');

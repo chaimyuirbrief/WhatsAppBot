@@ -50,6 +50,11 @@ change.
   posted in the last couple of days (WhatsApp's delete-for-everyone window)
 - Locally-maintained banned-number list
 
+**Accountability**
+- Every portal action is recorded against the admin who took it
+- Filter the log by kind of action, by admin, or by phrase
+- Click an admin to see their own trail
+
 **Scheduled lockdown**
 - Lock every group on a recurring weekly window — weekday, start time,
   duration, in a timezone you pick, and as many windows as you want
@@ -208,8 +213,29 @@ in a row:
 | `revokeMs` | 2500 | Delete-for-everyone, one message |
 | `jitterMs` | 2000 | Random extra added on top of **every** gap above |
 
-Three properties matter more than the numbers:
+Restraint at the connection level, same section:
 
+| Setting | Default | Covers |
+|---|---|---|
+| `groupRefreshMs` | 600000 | How long the cached group list stays fresh (10 min). A bulk job that changed the membership forces a refresh anyway — it knows the cache is wrong — but debounced, and through the paced socket like anything else. |
+| `reconnectMinMs` | 5000 | First reconnect attempt after a drop |
+| `reconnectMaxMs` | 300000 | ...doubling up to 5 minutes, and no faster |
+
+A bot that retries a dropped connection every two seconds is making the same
+noise as a burst of edits, aimed at an endpoint that is already unhappy. If
+WhatsApp answers a group refresh with a rate-limit, the retry backs off
+1m → 2m → 4m → 8m → 16m, and routine traffic cannot shorten or restart that
+ladder — letting a finishing bulk job reset it to ten seconds would turn
+"back off for a quarter of an hour" into "come straight back".
+
+Four properties matter more than the numbers:
+
+- **The socket paces itself.** The gate is not something each method remembers
+  to call — it lives under `bot.sock`, so *every* call through it waits its
+  turn (`src/core/paced-socket.js`). A call nobody has classified gets the
+  conservative default rather than going out instantly, and assigning a socket
+  wraps it, so there is no way to end up holding an unpaced one. Slow is what
+  you get by doing nothing; being fast has to be asked for.
 - **One clock, shared.** Every gap is measured against the last thing the bot
   sent, whatever sent it. Two bulk jobs running at once still add up to one
   paced stream rather than two — otherwise "5 seconds apart" quietly becomes
@@ -217,6 +243,11 @@ Three properties matter more than the numbers:
 - **One action in flight.** Nothing fans out. A bulk job is a queue of one.
 - **Jitter.** A gap of exactly 5.000s every time is a signature no human
   produces. The jitter only ever *adds*, so a configured gap is a floor.
+
+A bulk job can say what its calls really are without re-implementing anything:
+removing one person from forty groups is a stream of ordinary participant
+updates, so `banFromAllGroups` runs them under `{ participant: 'crossGroup' }`
+and the wider gap applies for the length of the sweep.
 
 Bulk jobs are slow enough to outlive the request that started them — a
 ban-from-all across forty groups is four minutes of work. Run them from the
@@ -226,6 +257,42 @@ A value that is not a real number (`null`, `""`, `false`, a typo) falls back
 to the default rather than coercing to zero, because a silent zero is the
 flood this exists to prevent. A deliberate numeric `0` **is** honoured and
 logs a warning — but there is no good reason to set one.
+
+---
+
+## Who did what
+
+Every action taken in the portal is recorded with the admin who took it, and
+the **Logs** tab shows the trail.
+
+Actions are bucketed into the handful of things admins actually do — sign-ins,
+admin accounts, lock/unlock, bans and members, group edits, settings,
+connection, job queue, email, log maintenance — and the tab offers a chip per
+bucket, plus a per-admin dropdown, a free-text search, and newest/oldest
+ordering. Chip counts describe the whole log, not the current filter, so they
+do not shift about as you click through them. Only buckets that contain
+something are offered.
+
+On the **Admins** tab, clicking an account opens that admin's own trail
+underneath it: how many actions they have on record, when they were last
+active, a breakdown of what kind of actions they were, and their most recent
+ones. "Open in Logs →" jumps to the full log already filtered to them.
+
+A bucket is just the **first segment of the request path** — `/lockdown/lock`
+is lockdown, `/members/ban-all` is members — so a route added next year is
+bucketed the day it ships instead of piling into "Other". Two small tables in
+`src/core/audit.js` shape the result and neither is load-bearing: one folds
+segments that mean the same thing (`/banned` is a members action), the other
+gives the buckets worth naming a label and an icon. A bucket with no entry
+still works; it gets its segment title-cased.
+
+Bucketing happens when the log is read rather than when it is written, so
+history recorded before this existed is categorised too, and a correction
+applies to everything rather than only to what happens next.
+
+One action is recorded once. A route that describes itself ("add admin
+\"bob\"") is not also filed under its bare method and path — recording both
+put a shadow copy beside every entry and doubled every count.
 
 ---
 
@@ -322,8 +389,9 @@ npm test
 ```
 
 Covers the outbound pacing (every bulk path, the shared clock, and the
-fallbacks that stop a bad config value meaning "no pacing"), the scheduled-lock
-window maths (including both daylight-saving
+fallbacks that stop a bad config value meaning "no pacing"), the audit log's
+bucketing and per-admin queries (both the pure rules and the live HTTP
+endpoints), the scheduled-lock window maths (including both daylight-saving
 transitions), the moderation rule decisions and their false-positive guards,
 rules routing, the member roster and identity merging, ban-and-wipe, group
 admin actions, auth and rate limiting, log rotation, and a lint pass over the
@@ -410,6 +478,8 @@ src/
                         and the whole group-management API
     plugin-manager.js   plugin loading and dispatch
     lockdown.js         recurring lock windows, DST-correct
+    audit.js            bucketing portal actions, per-admin queries
+    paced-socket.js     the socket wrapper that makes pacing automatic
     members.js          the cross-group member roster
     member-activity.js  per-member post counts
     message-index.js    recent message keys, so a ban can wipe what they posted
