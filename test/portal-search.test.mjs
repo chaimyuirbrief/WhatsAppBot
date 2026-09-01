@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, skipped = 0;
 const ok = (c, m) => { c ? (pass++, console.log(`  ok   ${m}`)) : (fail++, console.log(`  FAIL ${m}`)); };
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -81,17 +81,29 @@ ok(!/const SEARCH_ITEMS = \[/.test(appJs), 'no hardcoded list that could drift o
 
 console.log('=== REAL DOM: the index actually finds things in the live markup ===');
 {
-  const { parseHTML } = await import('linkedom');
-  const { document } = parseHTML(`<!doctype html><html><body>${html}</body></html>`);
+  // linkedom is a devDependency, and `./install.sh` installs with --omit=dev.
+  // Running `npm test` on a production box is a reasonable thing to do after a
+  // setup or a restore, so say what is missing and carry on rather than
+  // crashing the whole suite on an absent parser.
+  let parseHTML = null;
+  try { ({ parseHTML } = await import('linkedom')); } catch { /* not installed */ }
+  if (!parseHTML) {
+    skipped += 1;
+    console.log('  skip  linkedom not installed (production install) — `npm install` to run this block');
+  }
+  const { document } = parseHTML
+    ? parseHTML(`<!doctype html><html><body>${html}</body></html>`)
+    : { document: null };
+  const domOk = (c, m) => (document ? ok(c(), m) : undefined);
 
   // Run the real buildSearchIndex + scoreHit against the real page.
   const src = appJs.match(/const TAB_LABEL[\s\S]*?\nfunction runSearch/)[0]
     .replace(/\nfunction runSearch$/, '');
   const make = new Function('document', `${src}; return { buildSearchIndex, scoreHit };`);
-  const { buildSearchIndex, scoreHit } = make(document);
+  const { buildSearchIndex, scoreHit } = document ? make(document) : { buildSearchIndex: () => [], scoreHit: () => 0 };
 
   const idx = buildSearchIndex();
-  ok(idx.length > 100, `indexed ${idx.length} things from the real page`);
+  domOk(() => idx.length > 100, `indexed ${idx.length} things from the real page`);
 
   const find = (q) => idx
     .map((e) => ({ e, s: Math.max(scoreHit(e.what, q), e.sub ? scoreHit(e.sub, q) * 0.5 : 0) }))
@@ -115,24 +127,24 @@ console.log('=== REAL DOM: the index actually finds things in the live markup ==
     if (!hit) { console.log(`       "${q}" -> NOTHING FOUND`); bad++; continue; }
     if (wantTab && hit.tab !== wantTab) { console.log(`       "${q}" -> ${hit.what} (tab ${hit.tab}, expected ${wantTab})`); bad++; }
   }
-  ok(bad === 0, `all ${cases.length} realistic searches land on the right tab`);
+  domOk(() => bad === 0, `all ${cases.length} realistic searches land on the right tab`);
 
   // Every card heading must be findable by its own name - that is the core promise.
-  const headings = [...document.querySelectorAll('.panel .card h2')]
+  const headings = [...(document?.querySelectorAll('.panel .card h2') ?? [])]
     .map((h) => h.textContent.replace(/\s+/g, ' ').trim()).filter(Boolean);
   const unreachable = headings.filter((h) => {
     // Type it the way a person would: punctuation and emoji become spaces.
     const hit = find(h.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim());
     return !hit;
   });
-  ok(unreachable.length === 0, `all ${headings.length} section headings are reachable by search${unreachable.length ? ` — missing: ${unreachable.join(', ')}` : ''}`);
+  domOk(() => unreachable.length === 0, `all ${headings.length} section headings are reachable by search${unreachable.length ? ` — missing: ${unreachable.join(', ')}` : ''}`);
 
   // Collapse ids must be unique, or toggling one card would toggle another.
-  const ids = [...document.querySelectorAll('.panel .card')].map((c) => {
+  const ids = [...(document?.querySelectorAll('.panel .card') ?? [])].map((c) => {
     const panel = c.closest('.panel'); const h2 = c.querySelector('h2');
     return `${panel ? panel.id : '?'}::${h2 ? h2.textContent.replace(/\s+/g, ' ').trim() : '?'}`;
   });
-  ok(new Set(ids).size === ids.length, `all ${ids.length} card ids are unique (collapse state cannot collide)`);
+  domOk(() => new Set(ids).size === ids.length, `all ${ids.length} card ids are unique (collapse state cannot collide)`);
 }
 
 console.log('=== CSS soundness (a typo\'d var renders as transparent) ===');
@@ -155,5 +167,5 @@ console.log('=== CSS soundness (a typo\'d var renders as transparent) ===');
   ok(/prefers-color-scheme: light/.test(css), 'light theme is defined');
 }
 
-console.log(`\n${pass} passed, ${fail} failed`);
+console.log(`\n${pass} passed, ${fail} failed${skipped ? `, ${skipped} block(s) skipped (dev dependency missing)` : ''}`);
 process.exit(fail ? 1 : 0);

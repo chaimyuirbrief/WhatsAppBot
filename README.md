@@ -94,7 +94,100 @@ change.
 
 ---
 
+## Set it up with Claude
+
+If you use [Claude Code](https://claude.com/claude-code), clone this repo, open
+a session in it, and paste one of the prompts below. They carry the things a
+fresh session cannot guess — that the master key decrypts everything, that the
+pacing is deliberate, that the panel must not be exposed — and they say where
+Claude has to stop and hand back to you.
+
+Read what it proposes before approving. It will ask for `sudo`.
+
+### A fresh install
+
+````text
+Set up the WhatsApp group bot in this repo on this machine (Ubuntu). Read
+README.md first — especially "Read this first", "Install" and "Pacing".
+
+Things you need to know that aren't obvious:
+- Run ./install.sh as my normal user, never as root. It calls sudo itself.
+- On first run the app writes MASTER_KEY into .env. That key decrypts every
+  stored secret. Never commit it, never print it in full, and remind me to
+  back it up.
+- The panel binds 0.0.0.0:8080. Do NOT port-forward it or open a firewall
+  hole. If I ask for remote access, set web.bindAddress to 127.0.0.1 and give
+  me the SSH tunnel command instead.
+- The gaps under whatsapp.pacing are deliberate anti-ban measures. Don't
+  lower them, and don't "optimise" the bulk actions to run faster.
+
+Please:
+1. Check Node is 20+, run ./install.sh, then npm test.
+2. Install the generated whatsapp-bot.service so it survives reboots, start
+   it, and show me how to read its logs. Use systemd rather than `npm start`
+   — that one runs in the foreground and would hang your session.
+3. Confirm the panel responds on this machine, then give me the URL to open
+   and stop.
+
+Two things you can't do — hand them back to me:
+- Setting the admin password. I do that on first page load.
+- Linking the phone. I enter the number in the panel and type the pairing
+  code into WhatsApp myself. Don't invent a phone number.
+
+Once I tell you it's linked, remind me to run `node bin/backup.js create` and
+to keep that file somewhere safe.
+````
+
+### Moving an existing bot onto this machine
+
+````text
+I'm moving a WhatsApp group bot onto this machine from another one. I have its
+backup file at PATH/TO/backup.wabak and I know the passphrase.
+
+Read README.md, especially "Backup and moving to a new machine".
+
+Please:
+1. Run ./install.sh and npm test.
+2. Run `node bin/backup.js inspect PATH/TO/backup.wabak` and show me the
+   output. The "master key" line must say "included" before we go further —
+   if it says MISSING, stop and tell me, because the encrypted settings won't
+   survive and I need a fresh backup from the old machine.
+3. Give me the exact restore command to run in my own terminal.
+
+Do not ask me to paste the backup passphrase into this chat, and don't put it
+in a command you run — I'll type it myself.
+
+After I tell you the restore succeeded:
+4. Start the bot and confirm it comes back connected WITHOUT re-pairing the
+   phone. That's the point of the restore; if it asks for a pairing code,
+   something went wrong — check what the restore reported as skipped.
+5. Install the systemd service.
+6. Remind me to stop the bot on the old machine. Two instances sharing one
+   WhatsApp session will fight, and one gets kicked off.
+````
+
+### Nightly backups
+
+````text
+Set up a nightly encrypted backup of this WhatsApp bot. Read the "Unattended
+backups" part of README.md.
+
+- Propose where the backups go and how many to keep, and ask me before you
+  write anything.
+- The passphrase must not end up in the crontab, in the repo, or in this
+  conversation. Suggest a root-only file outside the repo and show me how to
+  reference it — I'll put the passphrase in place myself.
+- Add rotation so old backups get pruned.
+- Show me how to verify a backup actually restores, rather than assuming it
+  does. An untested backup isn't a backup.
+````
+
+---
+
 ## Install
+
+Doing it by hand. To have Claude walk it, see
+[Set it up with Claude](#set-it-up-with-claude) above.
 
 ```bash
 cd ~/whatsapp-bot
@@ -353,6 +446,9 @@ npm start
 ```
 
 The bot comes back with its settings, its admins and its WhatsApp link intact.
+There is a paste-ready prompt for this in
+[Set it up with Claude](#set-it-up-with-claude) if you would rather have Claude
+drive it.
 
 ### Restoring safely
 
