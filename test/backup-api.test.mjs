@@ -32,7 +32,16 @@ function install() {
 function serve({ user = { username: 'superadmin', role: 'superadmin' }, connected = false } = {}) {
   const { root, data } = install();
   const cfg = {
-    web: { admins: [{ username: 'superadmin', passwordHash: hashPassword('averylongpassword'), role: 'superadmin' }], adminPasswordHash: '' },
+    // alice must be a real account: requireAuth resolves the signed-in user
+    // against config on every request, so a session for an account that does
+    // not exist is (correctly) a 401, not the 403 these tests are checking.
+    web: {
+      admins: [
+        { username: 'superadmin', passwordHash: hashPassword('averylongpassword'), role: 'superadmin' },
+        { username: 'alice', passwordHash: hashPassword('averylongpassword'), role: 'admin' },
+      ],
+      adminPasswordHash: '',
+    },
     whatsapp: {}, lockdown: {}, logging: {}, email: {}, announce: {}, moderation: {},
   };
   const store = { audit: { events: [] } };

@@ -17,7 +17,7 @@ const api = async (method, url, body) => {
     // whatever button was pressed - that reads as the credentials being
     // wrong when the real problem is simply being logged out.
     if (res.status === 401 && !url.startsWith('/auth/')) {
-      sessionExpired();
+      sessionExpired(data?.expired ? data.error : '');
       throw Object.assign(new Error('Your session expired — please sign in again'),
                           { status: 401, handled: true });
     }
@@ -27,12 +27,17 @@ const api = async (method, url, body) => {
 };
 
 let gateShownForExpiry = false;
-function sessionExpired() {
+function sessionExpired(why) {
   if (gateShownForExpiry) return;
   gateShownForExpiry = true;
   SETUP_MODE = false;
+  clearTimeout(sessionTimer);
+  $('session-left').className = 'pill hidden';
   $('gate-title').textContent = 'Signed out';
-  $('gate-sub').textContent = 'Your session ended. Sign in to continue.';
+  // The server says whether this was the timeout, a removed account or just a
+  // lapsed session. "Unauthorized" for all three is how people conclude the
+  // panel is broken.
+  $('gate-sub').textContent = why || 'Your session ended. Sign in to continue.';
   $('gate-pw').value = '';
   $('gate-pw2').classList.add('hidden');
   $('gate-btn').textContent = 'Sign in';
@@ -117,6 +122,7 @@ async function enterApp() {
   loadAdmins();
   loadAudit();
   loadBackup();
+  refreshSessionBadge();
   loadLockdown();
   loadBanned();
   loadMembersRoster();
@@ -1107,6 +1113,43 @@ $('ban-add')?.addEventListener('click', async () => {
   } catch (err) { toast(err.message, true); }
 });
 
+/* ------------------------ session countdown ------------------------ */
+let sessionTimer = null;
+let SESSION_EXPIRES_AT = null;
+
+/**
+ * Show how long is left before the panel signs you out.
+ *
+ * Without this the timeout is indistinguishable from a bug: you click
+ * something, it fails, and the sign-in screen appears. Warns at five minutes
+ * so there is time to finish, and signs you out on the dot rather than
+ * leaving a dead page that only fails on the next click.
+ */
+function renderSessionBadge() {
+  const el = $('session-left');
+  if (!el) return;
+  if (!SESSION_EXPIRES_AT) { el.className = 'pill hidden'; el.textContent = ''; return; }
+
+  const leftMs = SESSION_EXPIRES_AT - Date.now();
+  if (leftMs <= 0) { sessionExpired('Your session timed out. Sign in to continue.'); return; }
+
+  const mins = Math.ceil(leftMs / 60_000);
+  el.className = `pill ${mins <= 5 ? 'warn' : ''}`;
+  el.textContent = mins <= 5 ? `signs out in ${Math.ceil(leftMs / 1000)}s` : `${fmtMins(mins)} left`;
+
+  clearTimeout(sessionTimer);
+  // Tick every second in the last five minutes, once a minute before that.
+  sessionTimer = setTimeout(renderSessionBadge, mins <= 5 ? 1000 : 30_000);
+}
+
+async function refreshSessionBadge() {
+  try {
+    const st = await api('GET', '/auth/status');
+    SESSION_EXPIRES_AT = st.sessionExpiresAt ?? null;
+    renderSessionBadge();
+  } catch { /* the api() helper already handles a lapsed session */ }
+}
+
 /* ------------------------- backup & restore ------------------------ */
 let BK_PREVIEW = null;
 
@@ -1238,15 +1281,27 @@ function applyUser() {
 /** Which admin's trail is open, so a reload does not collapse it. */
 let ADMIN_OPEN = null;
 let adminTrailReq = 0;
+let SESSION_LIMITS = { defaultMinutes: 240, maxMinutes: 43200 };
+
+/** "no timeout" / "45 min" / "4h 0m" — however it reads most plainly. */
+function fmtMins(m) {
+  if (!m) return 'no timeout';
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60), r = m % 60;
+  return r ? `${h}h ${r}m` : `${h}h`;
+}
 
 async function loadAdmins() {
   const box = $('admins-list');
   if (!box) return;
   try {
     const r = await api('GET', '/admins');
+    if (r.sessionLimits) SESSION_LIMITS = r.sessionLimits;
+    const isSuper = CURRENT_USER?.role === 'superadmin';
     box.innerHTML = r.admins.map((a) => {
       const u = esc(a.username);
       const js = jsStr(a.username);
+      const id = cssId(a.username);
       return `
       <div class="item compact clickable" onclick="adminToggle(${js})" title="Show what this admin has done">
         <div class="item-top">
@@ -1257,7 +1312,21 @@ async function loadAdmins() {
               ${a.username !== CURRENT_USER.username ? `<button class="btn tiny danger" onclick="adminRemove(${js})">Remove</button>` : ''}
             </span>` : ''}
         </div>
-        <div class="item-sub">${a.lastLogin ? 'last login ' + new Date(a.lastLogin).toLocaleString() : 'never signed in'}</div>
+        <div class="item-sub">${a.lastLogin ? 'last login ' + new Date(a.lastLogin).toLocaleString() : 'never signed in'}
+          · signed-in limit ${esc(fmtMins(a.sessionMinutes))}${a.sessionMinutesSet ? '' : ' <span class="muted">(default)</span>'}
+        </div>
+        ${isSuper ? `
+        <div class="row gap wrap" style="margin-top:6px;align-items:center" onclick="event.stopPropagation()">
+          <label class="muted small" style="margin:0">Sign-out after
+            <input id="sm-${id}" type="number" min="0" max="${SESSION_LIMITS.maxMinutes}" value="${a.sessionMinutes}"
+                   style="width:90px;margin:0 6px" title="Minutes. 0 = no timeout (super-admins only).">
+            minutes
+          </label>
+          <button class="btn tiny" onclick="adminSetSession(${js})">Save</button>
+          ${a.role === 'superadmin' ? '<span class="muted small">0 = never</span>'
+            : `<span class="muted small">min 1 · default ${SESSION_LIMITS.defaultMinutes}</span>`}
+          <span id="sm-note-${id}" class="muted small"></span>
+        </div>` : ''}
         <div class="admin-trail" id="trail-${cssId(a.username)}" style="display:none"
              onclick="event.stopPropagation()"></div>
       </div>`;
@@ -1320,10 +1389,11 @@ window.adminToggle = async (username) => {
 
 $('na-add')?.addEventListener('click', async () => {
   const username = $('na-user').value.trim(), password = $('na-pass').value, role = $('na-role').value;
+  const mins = $('na-mins').value.trim();
   $('na-note').textContent = 'adding…';
   try {
-    await api('POST', '/admins', { username, password, role });
-    $('na-user').value = ''; $('na-pass').value = '';
+    await api('POST', '/admins', { username, password, role, sessionMinutes: mins === '' ? null : Number(mins) });
+    $('na-user').value = ''; $('na-pass').value = ''; $('na-mins').value = '';
     $('na-note').innerHTML = '<span style="color:var(--accent)">added</span>';
     loadAdmins();
   } catch (err) { $('na-note').innerHTML = `<span style="color:var(--danger)">${esc(err.message)}</span>`; }
@@ -1333,6 +1403,24 @@ window.adminRemove = async (u) => {
   try { await api('DELETE', `/admins/${encodeURIComponent(u)}`); toast(`Removed ${u}`); loadAdmins(); }
   catch (err) { toast(err.message, true); }
 };
+/** Set how long one account may stay signed in. Super-admin only. */
+window.adminSetSession = async (u) => {
+  const id = cssId(u);
+  const note = $(`sm-note-${id}`);
+  const minutes = Number($(`sm-${id}`).value);
+  note.textContent = 'saving…';
+  try {
+    const r = await api('POST', `/admins/${encodeURIComponent(u)}/session`, { minutes });
+    // The reload re-renders the row, so confirm AFTER it - writing the note
+    // first would show it for a moment and then throw the element away.
+    await loadAdmins();
+    const fresh = $(`sm-note-${id}`);
+    if (fresh) fresh.innerHTML = `<span style="color:var(--accent)">saved · ${esc(fmtMins(r.minutes))}</span>`;
+    // Changing your own cap changes when you get signed out.
+    if (u === CURRENT_USER?.username) refreshSessionBadge();
+  } catch (err) { note.innerHTML = `<span style="color:var(--danger)">${esc(err.message)}</span>`; }
+};
+
 window.adminReset = async (u) => {
   const pw = prompt(`New password for "${u}" (8+ chars):`);
   if (!pw) return;

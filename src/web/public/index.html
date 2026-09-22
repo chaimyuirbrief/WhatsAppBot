@@ -37,6 +37,7 @@
     <div class="topbar-right">
       <span id="conn-pill" class="pill">…</span>
       <span id="who" class="muted small"></span>
+      <span id="session-left" class="pill" title="How long until this panel signs you out"></span>
       <button class="btn ghost small" id="btn-logout">Sign out</button>
     </div>
   </header>
@@ -489,8 +490,13 @@ npm start</pre>
           <input id="na-user" placeholder="username" class="flex1">
           <input id="na-pass" type="password" placeholder="password (8+ chars)" class="flex1">
           <select id="na-role"><option value="admin">admin</option><option value="superadmin">super-admin</option></select>
+          <input id="na-mins" type="number" min="0" placeholder="session mins" style="width:120px" title="How long they may stay signed in. 0 = no timeout, super-admins only.">
           <button class="btn small primary" id="na-add">Add</button>
         </div>
+        <p class="hint">Session timeout is how many minutes an account may stay signed in to this
+        panel before it has to sign in again. Leave it blank for the default. <b>0 disables the
+        timeout and is only allowed for a super-admin</b> — an ordinary admin with an unlimited
+        session is a browser left open on someone's desk.</p>
         <div id="na-note" class="muted small" style="margin-top:6px"></div>
       </div>
 

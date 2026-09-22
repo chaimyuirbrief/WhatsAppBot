@@ -9,6 +9,8 @@ import {
   needsSetup, setupSuperAdmin, authenticate, requireAuth, requireSuperAdmin,
   migrateIfNeeded, listAdmins, addAdmin, removeAdmin, resetPassword, findAdmin,
   isRateLimited, recordFailure, clearFailures,
+  startSession, setSessionMinutes, sessionMinutesFor, sessionExpiresAt,
+  DEFAULT_ADMIN_SESSION_MINUTES, MAX_SESSION_MINUTES,
 } from './auth.js';
 import { verifyPassword } from '../util/crypto.js';
 import { fmtBytes } from '../util/format.js';
@@ -79,10 +81,17 @@ export function createApiRouter({ configStore, bot, queue, pluginManager, stateS
   /* ----------------------------- auth ----------------------------- */
 
   router.get('/auth/status', (req, res) => {
+    const me = req.session?.user ? findAdmin(configStore, req.session.user.username) : null;
     res.json({
       setupRequired: needsSetup(configStore),
-      authed: !!req.session?.user,
-      user: req.session?.user ?? null,
+      // Not behind `guard` — the sign-in page polls this. So the account is
+      // resolved from config here too: a session whose account was removed or
+      // whose role changed must not keep reporting what it said at sign-in.
+      authed: !!req.session?.user && !!me,
+      user: me ? { username: me.username, role: me.role } : null,
+      // So the panel can warn before it happens rather than failing a click.
+      sessionMinutes: me ? sessionMinutesFor(me) : null,
+      sessionExpiresAt: me ? sessionExpiresAt(me, req.session?.loginAt) : null,
     });
   });
 
@@ -90,7 +99,7 @@ export function createApiRouter({ configStore, bot, queue, pluginManager, stateS
     if (!needsSetup(configStore)) return res.status(409).json({ error: 'already-configured' });
     try {
       setupSuperAdmin(configStore, req.body?.password);
-      req.session.user = { username: 'superadmin', role: 'superadmin' };
+      startSession(configStore, req, { username: 'superadmin', role: 'superadmin' });
       audit(req, 'setup super-admin');
       res.json({ ok: true, user: req.session.user });
     } catch (err) {
@@ -103,9 +112,14 @@ export function createApiRouter({ configStore, bot, queue, pluginManager, stateS
     const user = authenticate(configStore, req.body?.username, req.body?.password);
     if (user) {
       clearFailures(req);
-      req.session.user = user;
+      startSession(configStore, req, user);
+      const me = findAdmin(configStore, user.username);
       audit(req, 'login');
-      return res.json({ ok: true, user });
+      return res.json({
+        ok: true, user,
+        sessionMinutes: sessionMinutesFor(me),
+        sessionExpiresAt: sessionExpiresAt(me, req.session.loginAt),
+      });
     }
     recordFailure(req);
     res.status(401).json({ error: 'Wrong username or password' });
@@ -119,12 +133,20 @@ export function createApiRouter({ configStore, bot, queue, pluginManager, stateS
   /* ---------------------- admin account management ---------------- */
 
   router.get('/admins', guard, (req, res) => {
-    res.json({ admins: listAdmins(configStore), me: req.session.user });
+    res.json({
+      admins: listAdmins(configStore),
+      me: req.session.user,
+      // The form needs the same limits the server enforces.
+      sessionLimits: {
+        defaultMinutes: DEFAULT_ADMIN_SESSION_MINUTES,
+        maxMinutes: MAX_SESSION_MINUTES,
+      },
+    });
   });
 
   router.post('/admins', guard, superGuard, (req, res) => {
     try {
-      addAdmin(configStore, req.body?.username, req.body?.password, req.body?.role || 'admin');
+      addAdmin(configStore, req.body?.username, req.body?.password, req.body?.role || 'admin', req.body?.sessionMinutes);
       audit(req, `add admin "${req.body?.username}" (${req.body?.role || 'admin'})`);
       res.json({ ok: true, admins: listAdmins(configStore) });
     } catch (err) { res.status(400).json({ ok: false, error: err.message }); }
@@ -135,6 +157,19 @@ export function createApiRouter({ configStore, bot, queue, pluginManager, stateS
       removeAdmin(configStore, req.params.username);
       audit(req, `remove admin "${req.params.username}"`);
       res.json({ ok: true, admins: listAdmins(configStore) });
+    } catch (err) { res.status(400).json({ ok: false, error: err.message }); }
+  });
+
+  /**
+   * How long an account may stay signed in. Super-admin only, and it takes
+   * effect on any session that account already has - requireAuth re-reads
+   * this on every request.
+   */
+  router.post('/admins/:username/session', guard, superGuard, (req, res) => {
+    try {
+      const mins = setSessionMinutes(configStore, req.params.username, req.body?.minutes);
+      audit(req, `set session timeout for "${req.params.username}" to ${mins === 0 ? 'no timeout' : `${mins} min`}`);
+      res.json({ ok: true, minutes: mins, admins: listAdmins(configStore) });
     } catch (err) { res.status(400).json({ ok: false, error: err.message }); }
   });
 

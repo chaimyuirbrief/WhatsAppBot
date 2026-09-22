@@ -56,6 +56,7 @@ change.
 - From the portal or the command line
 
 **Accountability**
+- Per-admin sign-in time limits, set by the super-admin
 - Every portal action is recorded against the admin who took it
 - Filter the log by kind of action, by admin, or by phrase
 - Click an admin to see their own trail
@@ -123,9 +124,9 @@ Things you need to know that aren't obvious:
 
 Please:
 1. Check Node is 20+, run ./install.sh, then npm test.
-2. Install the generated whatsapp-bot.service so it survives reboots, start
-   it, and show me how to read its logs. Use systemd rather than `npm start`
-   — that one runs in the foreground and would hang your session.
+2. Confirm it installed and enabled the systemd service (install.sh does that
+   by default), and show me how to read its logs. Don't use `npm start` —
+   that runs in the foreground and would hang your session.
 3. Confirm the panel responds on this machine, then give me the URL to open
    and stop.
 
@@ -194,23 +195,26 @@ cd ~/whatsapp-bot
 ./install.sh
 ```
 
-This installs Node 20 and `npm install`s the dependencies. Run it as your
-normal user — it calls `sudo` where it needs to. It also writes
-`whatsapp-bot.service` for this install from the template.
+This installs Node 20, `npm install`s the dependencies, and **installs the bot
+as a systemd service that starts on boot**. Run it as your normal user — it
+calls `sudo` where it needs to.
 
-Then start it:
-
-```bash
-npm start
-```
-
-Or as a service that survives reboots:
+Starting on boot is the default because a bot that does not come back after a
+reboot silently stops moderating, and the reboot is usually an unattended
+`apt upgrade` at 3am with nobody around to run `npm start`.
 
 ```bash
-sudo cp whatsapp-bot.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now whatsapp-bot
+sudo systemctl status whatsapp-bot     # is it up?
+sudo journalctl -u whatsapp-bot -f     # follow the log
+sudo systemctl restart whatsapp-bot    # after editing settings on disk
 ```
+
+Re-running `./install.sh` after a `git pull` restarts the service, so it picks
+the new code up.
+
+Pass `--no-service` to skip that and run it in the foreground yourself with
+`npm start` — useful while developing, or on a machine without systemd (the
+installer detects that and says so rather than failing).
 
 Open the panel from any device on the network: `http://<server-ip>:8080`
 
@@ -391,6 +395,43 @@ applies to everything rather than only to what happens next.
 One action is recorded once. A route that describes itself ("add admin
 \"bob\"") is not also filed under its bare method and path — recording both
 put a shadow copy beside every entry and doubled every count.
+
+---
+
+## How long admins stay signed in
+
+The super-admin sets, per account, how many minutes it may stay signed in to
+the panel before it has to sign in again. `Admins` tab → **Sign-out after**.
+
+| | |
+|---|---|
+| A number of minutes | The account is signed out that long after signing in |
+| `0` | No timeout — **only allowed on a super-admin account** |
+| Left alone | 4 hours for an admin; no timeout for a super-admin |
+
+An ordinary admin cannot be unlimited, and that is the point of the setting.
+The panel holds a live WhatsApp session, it is reachable by anyone on the LAN,
+and the realistic way it gets used by someone it was not issued to is a browser
+left open on a desk. A super-admin may opt themselves out; nobody else may.
+
+Three things make it actually hold:
+
+- **It is checked on the server, every request.** The cookie is sized to match
+  so the browser forgets too, but a cookie is something an attacker would
+  already have — the check that matters reads the current config each time.
+- **Changing a cap applies to the session that account already has.** Shorten
+  someone to 5 minutes and their open session is governed by 5 minutes, not by
+  whatever it was when they signed in. No waiting for a next login that may
+  never come.
+- **The role is resolved live.** Demote a super-admin who had no timeout and
+  the stored `0` stops meaning unlimited immediately.
+
+Removing an account now ends its session too. Before this, a deleted admin kept
+working until their cookie expired.
+
+Admins with a cap see a countdown in the header, which turns to seconds in the
+last five minutes and signs them out on the dot. Being silently logged out
+mid-task is otherwise indistinguishable from the panel being broken.
 
 ---
 
@@ -575,7 +616,9 @@ npm test
 
 Covers backup and restore (what travels, the refusals, a full rebuild onto a
 bare machine, and that a hostile archive cannot write outside the data
-directory), the outbound pacing (every bulk path, the shared clock, and the
+directory), the per-admin sign-in limits (who may be unlimited, expiry at the
+boundary, and a session whose account was removed or demoted underneath it),
+the outbound pacing (every bulk path, the shared clock, and the
 fallbacks that stop a bad config value meaning "no pacing"), the audit log's
 bucketing and per-admin queries (both the pure rules and the live HTTP
 endpoints), the scheduled-lock window maths (including both daylight-saving
@@ -701,6 +744,9 @@ members, and delete other people's messages.
 
 - Password login, scrypt-hashed, with rate limiting (8 tries / 15 min).
 - Accounts have roles; destructive account management is super-admin only.
+- Per-account sign-in time limits, enforced server-side on every request. Only
+  a super-admin account may have no timeout. Removing an account, demoting it,
+  or shortening its limit all take effect on the session it already has.
 - Every action through the panel is written to an audit log.
 - Secrets encrypted at rest in `config.json`.
 - `data/` is `0700`, `.env` is `0600`.
@@ -728,6 +774,9 @@ and set the bind address to `127.0.0.1`.
 | "Wrong passphrase, or the backup file is damaged" | Exactly that. There is no recovery path; the passphrase is not stored anywhere |
 | Restore says it skipped files | The archive held paths outside the backed-up sections, or a symlink was in the way. Skipped entries are listed; nothing outside `data/` is ever written |
 | Restore says a restart is required | It does. Settings are read into memory at startup — `sudo systemctl restart whatsapp-bot` |
+| Signed out sooner than expected | Check the account's **Sign-out after** on the Admins tab. Accounts that predate the setting default to 4 hours |
+| Cannot set an admin to 0 minutes | By design. Only a super-admin account may have no timeout |
+| Bot did not come back after a reboot | `sudo systemctl is-enabled whatsapp-bot`. If it was installed with `--no-service`, enable it: `sudo systemctl enable --now whatsapp-bot` |
 | "Session taken over" | Another WhatsApp Web session displaced this one |
 | Nothing happens in a group | The bot must be a member; check the group JID in Settings |
 | Can't lock a group / kick someone | The bot must be an **admin** of that group |
