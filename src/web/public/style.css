@@ -104,6 +104,8 @@ main { padding: 16px; max-width: 940px; margin: 0 auto; padding-bottom: 60px; }
 }
 .card h3 { margin: 20px 0 10px; font-size: 13px; color: var(--muted); font-weight: 600;
   text-transform: uppercase; letter-spacing: .04em; }
+/* A step inside a section (the Shabbos lock's locations / the two ends). */
+.card h4 { margin: 16px 0 6px; font-size: 12px; font-weight: 600; color: var(--fg); }
 .badge {
   background: var(--line); color: var(--muted); border-radius: 999px;
   padding: 1px 8px; font-size: 12px; font-weight: 600;

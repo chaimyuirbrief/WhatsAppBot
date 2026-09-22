@@ -149,7 +149,10 @@ async function main() {
   // Scheduled lockdown: locks/unlocks all groups on the configured recurring windows.
   const lockState = stateStore.namespace('lockdown');
   const lockScheduler = new LockScheduler({
-    getConfig: () => configStore.get().lockdown,
+    // `groupCount` is not config: the scheduler uses it to work out how many
+    // minutes before candle lighting the walk has to start so the LAST group
+    // is locked in time.
+    getConfig: () => ({ ...configStore.get().lockdown, groupCount: bot.groups?.().length ?? 0 }),
     getState: () => lockState.get('state', { locked: false, source: null, overriddenWindowKey: null }),
     persist: (st) => lockState.set('state', st),
     applyLock: async (source, { onProgress } = {}) => {

@@ -139,6 +139,37 @@ export const DEFAULT_CONFIG = {
     // Groups that stay admins-only ALWAYS. Unlock (manual or scheduled) skips
     // these so a permanently-restricted group is never opened by the schedule.
     alwaysLocked: [],
+
+    // Automatic Shabbos / Yom Tov lock, computed from zmanim rather than from
+    // a fixed clock time, so it follows the sunset week by week. Has its own
+    // switch: `shabbos.enabled` works whether or not the weekly windows above
+    // are on.
+    shabbos: {
+      enabled: false,
+      includeYomTov: true,      // also lock for Yom Tov, not just Shabbos
+      inIsrael: false,          // one day of Yom Tov instead of two
+
+      // Places the two ends below refer to. Each:
+      //   { id, name, latitude, longitude, elevation, timezone,
+      //     candleOffsetMinutes }
+      // Elevation is metres (it moves sunset by a minute or two);
+      // candleOffsetMinutes is how long before sunset candle lighting is in
+      // that community - 18 in most places, 40 in Jerusalem.
+      locations: [],
+
+      // The two ends are read independently on purpose: locking on one city's
+      // candle lighting and unlocking on another city's Havdalah is a
+      // supported setup. `zman` is a key from src/core/zmanim.js and
+      // `offsetMinutes` shifts it, which is what makes any minhag reachable
+      // (tzais at 42 minutes is `sunset` with an offset of 42).
+      start: { locationId: '', zman: 'candleLighting', offsetMinutes: 0 },
+      end: { locationId: '', zman: 'tzais8.5', offsetMinutes: 0 },
+
+      // Start the walk this many minutes before the zman above, so the LAST
+      // group is locked by candle lighting rather than minutes after it.
+      // null = work it out from the group count and paceMs.
+      leadMinutes: null,
+    },
   },
 
   // Locally-maintained banned numbers (from the "ban from all" action).

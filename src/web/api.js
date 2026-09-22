@@ -20,6 +20,8 @@ import {
   collectBackup, packBackup, unpackBackup, inspectBackup, restoreBackup,
   backupFilename, safeManifest, SECTIONS, MIN_PASSPHRASE,
 } from '../core/backup.js';
+import { zmanOptions, previewZmanim, locationError, normalizeLocation } from '../core/zmanim.js';
+import { upcomingShabbosWindows, nextFridayIn } from '../core/lockdown.js';
 
 const logger = log.scope('api');
 
@@ -395,6 +397,59 @@ export function createApiRouter({ configStore, bot, queue, pluginManager, stateS
       audit(req, started ? 'unlocked all groups (manual)' : 'unlock ignored — a lockdown run was already in progress');
       res.json({ ok: true, started, ...lockScheduler.status() });
     } catch (err) { res.status(400).json({ ok: false, error: friendlyGroupError(err) }); }
+  });
+
+  /**
+   * The zmanim on offer, plus what the saved schedule actually works out to
+   * over the next few weeks. A Shabbos lock is the one feature nobody wants
+   * to discover is wrong by finding the groups open, so the panel shows the
+   * real minutes and lets the admin check them against their own luach.
+   */
+  router.get('/lockdown/zmanim', guard, (req, res) => {
+    // The group count is not config, but the head-start before candle lighting
+    // is worked out from it. Without it the panel would promise a shorter
+    // early start than the scheduler actually takes.
+    const cfg = { ...(configStore.get().lockdown ?? {}), groupCount: bot?.groups?.().length ?? 0 };
+    const days = clampPage(req.query.days, 28, 120);
+    try {
+      res.json({ options: zmanOptions(), upcoming: upcomingShabbosWindows(new Date(), cfg, days) });
+    } catch (err) {
+      logger.warn(`zmanim preview failed: ${err.message}`);
+      res.json({ options: zmanOptions(), upcoming: [], error: err.message });
+    }
+  });
+
+  /**
+   * Check one location - usually one the admin is still typing, before it is
+   * saved - and show what the zmanim come out as there. The reason a location
+   * is unusable is the whole value of this endpoint, so it is returned as a
+   * sentence rather than a bare 400.
+   */
+  // A GET, because it computes and changes nothing: the catch-all audit
+  // middleware records every POST, and an admin pressing "check the times"
+  // half a dozen times while typing a latitude is not an action worth
+  // recording six times.
+  router.get('/lockdown/zmanim/preview', guard, (req, res) => {
+    const q = req.query ?? {};
+    const asked = {
+      name: q.name, latitude: q.latitude, longitude: q.longitude,
+      elevation: q.elevation, timezone: q.timezone, candleOffsetMinutes: q.candleOffsetMinutes,
+    };
+    const problem = locationError(asked);
+    if (problem) return res.status(400).json({ ok: false, error: problem });
+    const loc = normalizeLocation(asked);
+
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(q.date ?? '').trim());
+    const day = m ? { y: +m[1], m: +m[2], d: +m[3] } : null;
+    // A date that matches the shape but is not a real day (2026-13-45) would
+    // reach the calendar as an invalid instant and come back as a page of nulls.
+    const real = day && day.m >= 1 && day.m <= 12 && day.d >= 1 && day.d <= 31
+      && day.y >= 1900 && day.y <= 2999;
+    try {
+      res.json({ ok: true, ...previewZmanim({ date: real ? day : nextFridayIn(loc.timezone), location: loc }) });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err.message });
+    }
   });
 
   /* ------------------------------ backup -------------------------- */

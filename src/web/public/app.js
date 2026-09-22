@@ -206,6 +206,7 @@ function fillForm(c) {
   // Lockdown - card on the Members tab, same deal as moderation.
   $('f-lock-enabled').checked = !!c.lockdown?.enabled;
   $('f-lock-tz').value = c.lockdown?.timezone ?? '';
+  fillShabbosForm(c.lockdown?.shabbos ?? {});
   LOCK_WINDOWS = (c.lockdown?.windows ?? []).map(normalizeWindow);
   renderLockWindows();
 
@@ -410,6 +411,7 @@ function collectLockdown() {
     enabled: $('f-lock-enabled').checked,
     timezone: $('f-lock-tz').value.trim(),
     windows: collectLockWindows(),
+    shabbos: collectShabbos(),
   };
   // Same guard as the group picker: never blank a list the page never drew.
   if (document.querySelectorAll('.al-g').length) {
@@ -417,6 +419,307 @@ function collectLockdown() {
   }
   return out;
 }
+
+/* ------------------- automatic Shabbos / Yom Tov lock ------------------- */
+/* Every time shown here comes from the server, which computes it with
+   KosherJava's zmanim. The panel never works a time out for itself, so what
+   an admin checks against their luach is exactly what the bot will do. */
+let SH_LOCATIONS = [];
+let ZMAN_OPTIONS = [];
+let SH_UPCOMING = [];
+let SH_DRAWN = false;        // have the location rows been rendered yet?
+
+/** A number, or '' - never the 0 that `+''` would hand back, because a blank
+    latitude silently becoming 0 puts the groups on Greenwich. */
+const numOrBlank = (v) => {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : '';
+  const s = String(v ?? '').trim();
+  return s !== '' && Number.isFinite(+s) ? +s : '';
+};
+
+/** Coordinates for places whoever sets this up is likely to want, so the
+    common case is one pick rather than hunting for a latitude. Static data on
+    purpose: there is no geocoding service to call, and the bot has to work on
+    a box with no internet. Candle-lighting minutes are the widely published
+    ones for each city and are editable per location. */
+const SH_PRESETS = [
+  { name: 'Brooklyn, NY', latitude: 40.6329, longitude: -73.9949, elevation: 15, timezone: 'America/New_York' },
+  { name: 'Manhattan, NY', latitude: 40.7831, longitude: -73.9712, elevation: 10, timezone: 'America/New_York' },
+  { name: 'Monsey, NY', latitude: 41.1112, longitude: -74.0682, elevation: 150, timezone: 'America/New_York' },
+  { name: 'Monroe / Kiryas Joel, NY', latitude: 41.3413, longitude: -74.1690, elevation: 150, timezone: 'America/New_York' },
+  { name: 'Lakewood, NJ', latitude: 40.0978, longitude: -74.2176, elevation: 15, timezone: 'America/New_York' },
+  { name: 'Baltimore, MD', latitude: 39.3641, longitude: -76.7003, elevation: 130, timezone: 'America/New_York' },
+  { name: 'Miami Beach, FL', latitude: 25.7907, longitude: -80.1300, elevation: 2, timezone: 'America/New_York' },
+  { name: 'Chicago, IL', latitude: 41.9990, longitude: -87.7100, elevation: 180, timezone: 'America/Chicago' },
+  { name: 'Los Angeles, CA', latitude: 34.0619, longitude: -118.3839, elevation: 60, timezone: 'America/Los_Angeles' },
+  { name: 'Toronto, ON', latitude: 43.7226, longitude: -79.4400, elevation: 160, timezone: 'America/Toronto' },
+  { name: 'Montreal, QC', latitude: 45.5175, longitude: -73.6400, elevation: 50, timezone: 'America/Toronto' },
+  { name: 'London (Golders Green)', latitude: 51.5762, longitude: -0.1936, elevation: 60, timezone: 'Europe/London' },
+  { name: 'Manchester, UK', latitude: 53.5100, longitude: -2.2500, elevation: 60, timezone: 'Europe/London' },
+  { name: 'Gateshead, UK', latitude: 54.9500, longitude: -1.6000, elevation: 50, timezone: 'Europe/London' },
+  { name: 'Antwerp, BE', latitude: 51.2100, longitude: 4.4200, elevation: 10, timezone: 'Europe/Brussels' },
+  { name: 'Jerusalem', latitude: 31.7683, longitude: 35.2137, elevation: 754, timezone: 'Asia/Jerusalem', candleOffsetMinutes: 40 },
+  { name: 'Bnei Brak', latitude: 32.0853, longitude: 34.8349, elevation: 40, timezone: 'Asia/Jerusalem', candleOffsetMinutes: 20 },
+  { name: 'Beit Shemesh', latitude: 31.7461, longitude: 34.9885, elevation: 300, timezone: 'Asia/Jerusalem', candleOffsetMinutes: 20 },
+  { name: 'Tel Aviv', latitude: 32.0853, longitude: 34.7818, elevation: 20, timezone: 'Asia/Jerusalem', candleOffsetMinutes: 20 },
+  { name: 'Haifa', latitude: 32.8191, longitude: 34.9983, elevation: 250, timezone: 'Asia/Jerusalem', candleOffsetMinutes: 30 },
+  { name: 'Melbourne, AU', latitude: -37.8700, longitude: 145.0000, elevation: 30, timezone: 'Australia/Melbourne' },
+  { name: 'Johannesburg, ZA', latitude: -26.1400, longitude: 28.0500, elevation: 1700, timezone: 'Africa/Johannesburg' },
+];
+
+function shLocation(raw) {
+  return {
+    id: raw?.id || `l${Math.random().toString(36).slice(2, 8)}`,
+    name: raw?.name ?? '',
+    latitude: numOrBlank(raw?.latitude),
+    longitude: numOrBlank(raw?.longitude),
+    elevation: numOrBlank(raw?.elevation) === '' ? 0 : numOrBlank(raw?.elevation),
+    timezone: raw?.timezone ?? '',
+    candleOffsetMinutes: numOrBlank(raw?.candleOffsetMinutes) === '' ? 18 : numOrBlank(raw?.candleOffsetMinutes),
+  };
+}
+
+/** A time in the zone it belongs to - not the browser's. An admin in New York
+    checking a Jerusalem Havdalah must see the Jerusalem clock. */
+function fmtAtZone(when, tz, withDate = false) {
+  const d = new Date(when);
+  try {
+    return new Intl.DateTimeFormat([], {
+      timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+      ...(withDate ? { weekday: 'short', month: 'short', day: 'numeric' } : {}),
+    }).format(d);
+  } catch { return d.toLocaleString(); }
+}
+
+/**
+ * Which clock a lock time belongs on. `lockBy` is only set when the window in
+ * hand is a zmanim one, and then each end belongs to its own place; otherwise
+ * it is a weekly window in the configured zone. Either beats the browser's own
+ * zone, which is just wherever the admin's laptop happens to be.
+ */
+/** "Asia/Jerusalem" -> "Jerusalem". Each time in the status line is labelled
+ *  with its OWN zone, because the two ends of a Shabbos lock may be in two
+ *  different places and one shared label would be wrong for one of them. */
+function shortZone(tz) {
+  return String(tz ?? '').split('/').pop().replace(/_/g, ' ');
+}
+
+function lockZone(st, side) {
+  const zmanWindow = !!st?.shabbos?.lockBy;
+  return (zmanWindow && st?.shabbos?.[side]?.timezone) || st?.timezone || 'UTC';
+}
+
+function renderShLocations(seed = null) {
+  const box = $('sh-locations');
+  if (!box) return;
+  box.innerHTML = SH_LOCATIONS.length ? SH_LOCATIONS.map((l, i) => `
+    <div class="item sh-loc-row" data-id="${esc(l.id)}">
+      <label>Name <input class="sl-name" value="${esc(l.name)}" placeholder="Brooklyn, NY"></label>
+      <div class="row gap wrap">
+        <label class="flex1">Latitude <input class="sl-lat" type="number" step="0.0001" value="${esc(String(l.latitude))}"></label>
+        <label class="flex1">Longitude <input class="sl-lon" type="number" step="0.0001" value="${esc(String(l.longitude))}"></label>
+        <label class="flex1">Elevation (m) <input class="sl-elev" type="number" step="1" value="${esc(String(l.elevation))}"></label>
+      </div>
+      <div class="row gap wrap">
+        <label class="flex1">Time zone <input class="sl-tz" value="${esc(l.timezone)}" placeholder="America/New_York" autocapitalize="off" spellcheck="false"></label>
+        <label class="flex1">Candle lighting <span class="hint">minutes before sunset</span>
+          <input class="sl-cl" type="number" min="0" max="120" step="1" value="${esc(String(l.candleOffsetMinutes))}"></label>
+      </div>
+      <div class="row gap wrap">
+        <button class="btn tiny" onclick="shCheckTimes(${i})">Check the times here</button>
+        <button class="btn tiny danger" onclick="removeShLocation(${i})">Remove</button>
+      </div>
+      <div class="sl-times muted small"></div>
+    </div>`).join('') : '<div class="empty">No location yet.</div>';
+  SH_DRAWN = true;
+  renderShPickers(seed);
+}
+
+function collectShLocations() {
+  return [...document.querySelectorAll('#sh-locations .sh-loc-row')].map((row) => ({
+    id: row.dataset.id,
+    name: row.querySelector('.sl-name').value.trim(),
+    latitude: numOrBlank(row.querySelector('.sl-lat').value),
+    longitude: numOrBlank(row.querySelector('.sl-lon').value),
+    elevation: numOrBlank(row.querySelector('.sl-elev').value),
+    timezone: row.querySelector('.sl-tz').value.trim(),
+    candleOffsetMinutes: numOrBlank(row.querySelector('.sl-cl').value),
+  }));
+}
+
+/**
+ * Fill the four pickers. With a `seed` (the saved config) the saved choice
+ * wins; without one, whatever is selected now is kept - adding a location
+ * must not quietly reassign which place the lock is read from.
+ */
+function renderShPickers(seed = null) {
+  const locs = collectShLocations();
+  fillShLoc($('f-sh-start-loc'), locs, seed?.start?.locationId);
+  fillShLoc($('f-sh-end-loc'), locs, seed?.end?.locationId);
+  fillShZman($('f-sh-start-zman'), 'start', seed?.start?.zman, 'candleLighting');
+  fillShZman($('f-sh-end-zman'), 'end', seed?.end?.zman, 'tzais8.5');
+}
+
+function fillShLoc(sel, locs, want) {
+  if (!sel) return;
+  const has = (id) => !!id && locs.some((l) => l.id === id);
+  const pick = has(want) ? want : (has(sel.value) ? sel.value : (locs[0]?.id ?? ''));
+  sel.innerHTML = locs.length
+    ? locs.map((l) => `<option value="${esc(l.id)}"${l.id === pick ? ' selected' : ''}>${esc(l.name || 'unnamed')}</option>`).join('')
+    : '<option value="">— add a location first —</option>';
+}
+
+function fillShZman(sel, side, want, def) {
+  if (!sel) return;
+  const known = (k) => !!k && ZMAN_OPTIONS.some((z) => z.key === k);
+  // Before the catalogue has arrived, keep whatever was asked for and render
+  // it as a single option, so a saved choice is never silently downgraded.
+  const pick = (want && (known(want) || !ZMAN_OPTIONS.length)) ? want
+    : (known(sel.value) ? sel.value : (sel.value || def));
+  const list = ZMAN_OPTIONS.length ? ZMAN_OPTIONS : [{ key: pick, label: pick, side }];
+  // Everything is offered at both ends - somebody may genuinely want to
+  // unlock at sunset - but the ones that end is usually read from come first.
+  const mine = list.filter((z) => z.side === side || z.side === 'both');
+  const rest = list.filter((z) => !(z.side === side || z.side === 'both'));
+  const opt = (z) => `<option value="${esc(z.key)}"${z.key === pick ? ' selected' : ''}>${esc(z.label)}</option>`;
+  sel.innerHTML = mine.map(opt).join('')
+    + (rest.length ? `<optgroup label="Other zmanim">${rest.map(opt).join('')}</optgroup>` : '');
+}
+
+function renderShPresets() {
+  const sel = $('f-sh-preset');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">Choose a place…</option>'
+    + SH_PRESETS.map((p) => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
+}
+
+function fillShabbosForm(sh = {}) {
+  $('f-sh-enabled').checked = !!sh.enabled;
+  $('f-sh-yomtov').checked = sh.includeYomTov !== false;
+  $('f-sh-israel').checked = !!sh.inIsrael;
+  $('f-sh-lead').value = typeof sh.leadMinutes === 'number' ? sh.leadMinutes : '';
+  $('f-sh-start-off').value = typeof sh.start?.offsetMinutes === 'number' ? sh.start.offsetMinutes : 0;
+  $('f-sh-end-off').value = typeof sh.end?.offsetMinutes === 'number' ? sh.end.offsetMinutes : 0;
+  SH_LOCATIONS = (Array.isArray(sh.locations) ? sh.locations : []).map(shLocation);
+  renderShLocations(sh);
+}
+
+function collectShabbos() {
+  const lead = String($('f-sh-lead').value ?? '').trim();
+  const out = {
+    enabled: $('f-sh-enabled').checked,
+    includeYomTov: $('f-sh-yomtov').checked,
+    inIsrael: $('f-sh-israel').checked,
+    start: {
+      locationId: $('f-sh-start-loc').value,
+      zman: $('f-sh-start-zman').value || 'candleLighting',
+      offsetMinutes: numOrBlank($('f-sh-start-off').value) || 0,
+    },
+    end: {
+      locationId: $('f-sh-end-loc').value,
+      zman: $('f-sh-end-zman').value || 'tzais8.5',
+      offsetMinutes: numOrBlank($('f-sh-end-off').value) || 0,
+    },
+    // Blank is not zero: blank means "work it out from how many groups there
+    // are", while zero means "start exactly at the zman", which finishes late.
+    leadMinutes: lead === '' ? null : Math.max(0, Math.round(numOrBlank(lead) || 0)),
+  };
+  // Same guard as the group pickers: never blank a list the page never drew.
+  if (SH_DRAWN) out.locations = collectShLocations().filter((l) => l.name || l.timezone);
+  return out;
+}
+
+/** The catalogue of zmanim, and what the saved schedule works out to. */
+async function loadZmanim() {
+  try {
+    const r = await api('GET', '/lockdown/zmanim');
+    ZMAN_OPTIONS = Array.isArray(r.options) ? r.options : [];
+    SH_UPCOMING = Array.isArray(r.upcoming) ? r.upcoming : [];
+    renderShPickers();
+    renderShUpcoming(r.error ?? '');
+  } catch (err) {
+    renderShUpcoming(err.message);
+  }
+}
+
+function renderShUpcoming(error = '') {
+  const box = $('sh-upcoming');
+  if (!box) return;
+  if (error) { box.innerHTML = `<div class="verdict bad">${esc(error)}</div>`; return; }
+  if (!SH_UPCOMING.length) {
+    box.innerHTML = $('f-sh-enabled').checked
+      ? '<div class="empty">Nothing worked out yet — add a location, pick the two zmanim, and save.</div>'
+      : '';
+    return;
+  }
+  box.innerHTML = '<div style="margin-bottom:6px">The next few, exactly as the bot will run them:</div>'
+    + SH_UPCOMING.slice(0, 8).map((w) => `
+      <div class="item">
+        <b>${esc(w.label)}</b>
+        <div>🔒 ${esc(w.start.zmanLabel)} at ${esc(w.start.location)} is
+          <b>${fmtAtZone(w.start.at, w.start.timezone, true)}</b>${w.start.fallback ? ' <span class="warn">(approximated from sunset at this latitude)</span>' : ''}
+          ${w.leadMinutes ? `— locking starts ${w.leadMinutes} min earlier so the last group is shut in time` : ''}</div>
+        <div>🔓 ${esc(w.end.zmanLabel)} at ${esc(w.end.location)} is
+          <b>${fmtAtZone(w.end.at, w.end.timezone, true)}</b>${w.end.fallback ? ' <span class="warn">(approximated from sunset at this latitude)</span>' : ''}</div>
+      </div>`).join('');
+}
+
+function renderShProblems(problems) {
+  const box = $('sh-problems');
+  if (!box) return;
+  const list = Array.isArray(problems) ? problems : [];
+  box.innerHTML = list.length
+    ? `<div class="verdict bad" style="margin-top:10px">${list.map(esc).join('<br>')}</div>`
+    : '';
+}
+
+window.removeShLocation = (i) => {
+  SH_LOCATIONS = collectShLocations();
+  SH_LOCATIONS.splice(i, 1);
+  renderShLocations();
+};
+
+/** Check one location's zmanim before trusting it with the groups. Uses the
+    row as it is being typed, so a mistake shows up before it is saved. */
+window.shCheckTimes = async (i) => {
+  const row = [...document.querySelectorAll('#sh-locations .sh-loc-row')][i];
+  if (!row) return;
+  const out = row.querySelector('.sl-times');
+  out.textContent = 'checking…';
+  try {
+    const l = collectShLocations()[i];
+    const q = new URLSearchParams({
+      name: l.name, latitude: String(l.latitude), longitude: String(l.longitude),
+      elevation: String(l.elevation), timezone: l.timezone,
+      candleOffsetMinutes: String(l.candleOffsetMinutes),
+    });
+    const r = await api('GET', `/lockdown/zmanim/preview?${q}`);
+    const keys = Object.keys(r.times).filter((k) => r.times[k]);
+    const day = `${r.date.y}-${String(r.date.m).padStart(2, '0')}-${String(r.date.d).padStart(2, '0')}`;
+    out.innerHTML = `<div style="margin-top:6px">${esc(day)}, ${esc(r.timezone)}:</div>`
+      + keys.map((k) => `<div>${esc(r.times[k].label)} — <b>${fmtAtZone(r.times[k].at, r.timezone)}</b>`
+        + `${r.times[k].fallback ? ' <span class="warn">(approximated from sunset)</span>' : ''}</div>`).join('');
+  } catch (err) {
+    out.innerHTML = `<span style="color:var(--danger)">${esc(err.message)}</span>`;
+  }
+};
+
+$('btn-shloc-add')?.addEventListener('click', () => {
+  SH_LOCATIONS = collectShLocations();
+  SH_LOCATIONS.push(shLocation({}));
+  renderShLocations();
+});
+
+$('f-sh-preset')?.addEventListener('change', (e) => {
+  const chosen = SH_PRESETS.find((p) => p.name === e.target.value);
+  e.target.value = '';
+  if (!chosen) return;
+  SH_LOCATIONS = collectShLocations();
+  SH_LOCATIONS.push(shLocation(chosen));
+  renderShLocations();
+});
+
+renderShPresets();
 
 function collectForm() {
   const lines = (v) => v.split('\n').map((s) => s.trim()).filter(Boolean);
@@ -984,20 +1287,26 @@ async function loadLockdown({ statusOnly = false } = {}) {
         <div>
           <div class="status-title">${st.locked ? '🔒 Groups are LOCKED' : '🔓 Groups are open'}${st.source ? ` <span class="muted small">(${esc(st.source)})</span>` : ''}</div>
           <div class="muted small">
-            ${st.enabled ? 'Scheduled lockdown ON' : 'Scheduled lockdown off'}
-            ${st.nextLockAt ? ` · next lock ${new Date(st.nextLockAt).toLocaleString()}` : ''}
-            ${st.nextUnlockAt ? ` · unlock ${new Date(st.nextUnlockAt).toLocaleString()}` : ''}
+            ${st.enabled ? 'Weekly schedule ON' : 'Weekly schedule off'}
+            ${st.shabbos?.enabled ? ` · Shabbos lock ON${st.shabbos.includeYomTov ? ' + Yom Tov' : ''}` : ' · Shabbos lock off'}
+            ${st.windowLabel ? ` · next: ${esc(st.windowLabel)}` : ''}
+            ${st.nextLockAt ? ` · lock ${esc(fmtAtZone(st.nextLockAt, lockZone(st, 'start'), true))} ${esc(shortZone(lockZone(st, 'start')))}` : ''}
+            ${st.nextUnlockAt ? ` · unlock ${esc(fmtAtZone(st.nextUnlockAt, lockZone(st, 'end'), true))} ${esc(shortZone(lockZone(st, 'end')))}` : ''}
           </div>
           ${renderLockRun(st.run, paceSecs)}
           ${!st.run && st.lastRun?.error ? `<div class="muted small" style="margin-top:8px">last ${esc(st.lastRun.action)} failed: ${esc(st.lastRun.error)}</div>` : ''}
         </div>
       </div>`;
+    renderShProblems(st.shabbos?.problems);
     if (!statusOnly) {
       $('f-lock-enabled').checked = !!CONFIG?.lockdown?.enabled;
       $('f-lock-tz').value = CONFIG?.lockdown?.timezone ?? '';
       LOCK_WINDOWS = (CONFIG?.lockdown?.windows ?? []).map(normalizeWindow);
       renderLockWindows();
       renderAlwaysLocked();
+      fillShabbosForm(CONFIG?.lockdown?.shabbos ?? {});
+      // The zmanim catalogue and the worked-out dates come from the server.
+      loadZmanim();
     }
     // Keep refreshing while a paced run is still walking the groups.
     clearTimeout(lockPollTimer);

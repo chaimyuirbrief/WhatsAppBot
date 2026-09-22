@@ -69,6 +69,17 @@ change.
 - Locking and unlocking is paced: one group at a time, 5 seconds apart, so
   WhatsApp is never handed the whole set at once
 
+**Automatic Shabbos lock**
+- Locks at candle lighting and unlocks after Havdalah, from the zmanim for a
+  place you enter — no fixed time to adjust twice a year
+- Zmanim computed on your own machine (KosherJava's), so it needs no internet
+- Pick which zman each end uses, and shift either by minutes, so any minhag is
+  reachable
+- Lock on one city's candle lighting and unlock on a different city's Havdalah
+- Yom Tov too, one day or two, with a chag running into Shabbos handled as one
+  continuous lock
+- Starts early enough that the *last* group is shut before candle lighting
+
 **Rules**
 - Anyone sends `#rules` and gets the group rules back, in a group or by DM
 - Per-group rule sets, each also reachable by its own `#rules-<name>` command
@@ -183,6 +194,42 @@ backups" part of README.md.
   does. An untested backup isn't a backup.
 ````
 
+### Setting up the automatic Shabbos lock
+
+````text
+Set up the automatic Shabbos lock on this bot. Read the "Automatic Shabbos
+lock" section of README.md first.
+
+My community: CITY / NEIGHBOURHOOD. We light MINUTES minutes before sunset and
+we go by ZMAN for Havdalah (e.g. "tzais 72 minutes", "8.5 degrees", "42
+minutes after sunset"). ISRAEL OR DIASPORA. Lock for Yom Tov too: YES / NO.
+
+Please:
+1. Tell me the exact coordinates, elevation and IANA timezone you would use
+   for my location, and where you got them. If the place is in the built-in
+   list, say so and use those.
+2. Work out which zman key and which offsetMinutes match the Havdalah time I
+   gave you — remember an offset on `sunset` covers any "N minutes after
+   sunset" custom, so don't tell me it isn't supported.
+3. Show me, for the next four Shabbosos and the next Yom Tov, the candle
+   lighting and Havdalah times this setting produces, in my own timezone. I
+   will check them against my luach before we save anything. If they are off
+   by more than a minute or two, we have the wrong coordinates — fix that
+   rather than adding an offset to paper over it.
+4. Only once I confirm the times: give me the settings to enter in
+   Members → Group lockdown → Automatic Shabbos lock, or the exact JSON for
+   `lockdown.shabbos` in data/config.json. Don't switch it on for me.
+
+Don't compute the zmanim yourself from a formula and don't look them up on a
+website — use this repo's own code, so what I check is what the bot will
+actually do:
+  node -e "import('./src/core/zmanim.js').then(z => console.log(z.previewZmanim({ date: { y: 2026, m: 1, d: 16 }, location: { name: 'X', latitude: 0, longitude: 0, elevation: 0, timezone: 'UTC' } })))"
+
+Finally, sanity-check the head start: tell me how many groups I have and
+confirm the lock will start early enough that the last one is shut before
+candle lighting.
+````
+
 ---
 
 ## Install
@@ -285,6 +332,117 @@ behaviour, so the run outlives the request that asked for it:
   still reads "unlocked" and a scheduled window will lock everything again on
   the next tick. Outside a window — a manual lock, or the schedule switched
   off — nothing re-drives it, so check the state after a restart mid-run.
+
+---
+
+## Automatic Shabbos lock
+
+Instead of a fixed clock time, the groups can lock at **candle lighting** and
+unlock after **Havdalah**, worked out from the zmanim for a place you enter.
+The times move with the sunset week by week, so there is nothing to adjust
+twice a year or at the solstices.
+
+The calculations are done **on your own machine** by
+[`kosher-zmanim`](https://github.com/BehindTheMath/KosherZmanim), the
+JavaScript port of [KosherJava](https://github.com/KosherJava/zmanim). That is
+deliberate: no zmanim web service is called, so this keeps working on a box
+with no internet, and a network problem can never be the reason the groups
+stayed open into Shabbos. (`kosher-zmanim` is LGPL-3.0 and is used unmodified
+as an ordinary npm dependency; none of its code is copied into this
+repository.)
+
+Everything lives under `lockdown.shabbos`, and it has its **own switch** — it
+works whether or not the weekly windows above are on.
+
+### Entering a location
+
+Members → Group lockdown → Automatic Shabbos lock. Either pick a place from
+the list (Brooklyn, Lakewood, Monsey, Jerusalem, Bnei Brak, London, Manchester,
+Antwerp, Toronto, Melbourne, Johannesburg and more, with coordinates filled in)
+or type your own:
+
+| Field | Meaning |
+|---|---|
+| `name` | What you call it. Shown in the panel and the log. |
+| `latitude` / `longitude` | Decimal degrees. Negative is south / west. |
+| `elevation` | Metres above sea level. It moves sunset by a minute or two. |
+| `timezone` | IANA zone, e.g. `America/New_York`. Refused if this machine does not know it. |
+| `candleOffsetMinutes` | How long before sunset your community lights — 18 in most places, 40 in Jerusalem, 30 in Haifa. |
+
+A blank or nonsense coordinate is **refused with a reason**, never quietly read
+as 0 — a bot silently following the zmanim of a spot in the Atlantic would lock
+at the wrong minute all year. **"Check the times here"** computes that
+location's zmanim for the coming Friday so you can hold them against your own
+luach before trusting them with the groups.
+
+### Choosing the two zmanim
+
+The lock end and the unlock end are configured independently, each with its own
+place, its own zman and its own offset in minutes:
+
+```json
+"shabbos": {
+  "enabled": true,
+  "includeYomTov": true,
+  "inIsrael": false,
+  "locations": [ /* the places above */ ],
+  "start": { "locationId": "bk", "zman": "candleLighting", "offsetMinutes": 0 },
+  "end":   { "locationId": "jm", "zman": "tzais72",        "offsetMinutes": 5 },
+  "leadMinutes": null
+}
+```
+
+Available zmanim: `candleLighting`, `sunset`, `seaLevelSunset`, `plagHamincha`,
+and for the unlock `tzais8.5`, `tzais7.083`, `tzais5.95`, `tzais3.7`,
+`tzais16.1`, `tzais50`, `tzais60`, `tzais72`, `tzais72Zmanis`. Every one is
+offered at both ends — the split is only about which is listed first.
+
+`offsetMinutes` shifts the zman, which is what makes any minhag reachable
+without a new option: **tzais at 42 minutes is `sunset` with an offset of 42**,
+and a negative offset locks earlier.
+
+**Two different places is a supported setup, not an accident** — lock on the
+candle lighting where the groups are and unlock on a stricter city's Havdalah.
+If the unlock lands *before* the same zman where the lock was read (an eastward
+city, whose Havdalah falls during your Shabbos afternoon), the panel says so and
+by how much, but still does what you asked.
+
+### Yom Tov
+
+With `includeYomTov` on, every day melacha is forbidden is locked, not only
+Shabbos. `inIsrael` switches between one day of Yom Tov and two.
+
+**Consecutive days are one lock.** Two days of Pesach running into Shabbos is a
+single window from Wednesday's candle lighting to Saturday night — the groups
+are not reopened at nightfall in between — and it keeps one identity for the
+whole stretch, so an admin who unlocks by hand during Yom Tov is not re-locked
+an hour later. Chol hamoed is not locked.
+
+### The head start
+
+Locking is deliberately slow — one group every `lockdown.paceMs` — so a lock
+that *begins* at candle lighting *finishes* minutes after it. The window
+therefore opens early enough for the **last** group to be shut by the zman
+itself.
+
+Left as `null`, `leadMinutes` is worked out from how many groups you have and
+the configured pace (60 groups at 5s each ⇒ 6 minutes). Set a number to
+override it. Note that `0` means "start exactly at the zman", which finishes
+late; blank is not the same as zero.
+
+The unlock is not given a head start, so the groups reopen a few minutes
+*after* Havdalah rather than before it.
+
+### When a zman has no answer
+
+Far enough north the sun never reaches 8.5° below the horizon in summer, so the
+degree-based calculations genuinely have no answer. Rather than skip the lock,
+an approximation from sunset is used and **flagged as approximate** in the
+panel. Under a true midnight sun, where there is no sunset at all, no time is
+invented and that Shabbos is skipped.
+
+The panel lists the next few locks exactly as the bot will run them, each time
+on its own location's clock, so what you check is what will happen.
 
 ---
 
@@ -557,7 +715,8 @@ using `MASTER_KEY` from `.env`.
 **Back up `.env`.** Lose it and the saved secrets become unreadable.
 
 No third-party API keys are needed. The only outbound connection the bot makes
-is to WhatsApp itself.
+is to WhatsApp itself — the zmanim behind the Shabbos lock are calculated
+locally, so nothing about it depends on a service staying up.
 
 ---
 
@@ -622,7 +781,11 @@ the outbound pacing (every bulk path, the shared clock, and the
 fallbacks that stop a bad config value meaning "no pacing"), the audit log's
 bucketing and per-admin queries (both the pure rules and the live HTTP
 endpoints), the scheduled-lock window maths (including both daylight-saving
-transitions), the moderation rule decisions and their false-positive guards,
+transitions), the Shabbos lock end to end (zmanim against published times for
+several cities, the Hebrew calendar including a two-day chag running into
+Shabbos in the diaspora and in Israel, the head start before candle lighting,
+a two-city lock, what happens where a zman has no answer, and a round trip of
+the whole panel through the real markup), the moderation rule decisions and their false-positive guards,
 rules routing, the member roster and identity merging, ban-and-wipe, group
 admin actions, auth and rate limiting, log rotation, and a lint pass over the
 control panel that checks every element the frontend drives actually exists.
@@ -707,7 +870,10 @@ src/
     bot.js              Baileys connection, reconnect, message normalizing,
                         and the whole group-management API
     plugin-manager.js   plugin loading and dispatch
-    lockdown.js         recurring lock windows, DST-correct
+    lockdown.js         recurring lock windows, DST-correct, and the
+                        zmanim-driven Shabbos / Yom Tov windows
+    zmanim.js           candle lighting, tzais and the Hebrew calendar,
+                        computed locally - no zmanim service is called
     audit.js            bucketing portal actions, per-admin queries
     paced-socket.js     the socket wrapper that makes pacing automatic
     backup.js           what travels to a new machine, encrypted

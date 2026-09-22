@@ -412,6 +412,52 @@ npm start</pre>
         </label>
         <div id="lock-windows" class="list"><div class="empty">No windows yet.</div></div>
         <button class="btn small" id="btn-lockwin-add" style="margin-top:10px">+ Add a window</button>
+        <h3>Automatic Shabbos lock 🕯️</h3>
+        <p class="hint">Locks every group at candle lighting and unlocks after Havdalah, worked out from
+        the zmanim where you say — so it moves with the sunset every week instead of needing a fixed time.
+        The times are calculated on this machine (KosherJava's zmanim), so this keeps working even with no
+        internet. Yom Tov running into Shabbos is handled as one continuous lock.</p>
+
+        <label class="check"><input type="checkbox" id="f-sh-enabled"> Lock automatically for Shabbos
+          <span class="hint">this has its own switch — it works whether or not the weekly windows above are on</span></label>
+        <label class="check"><input type="checkbox" id="f-sh-yomtov"> …and for Yom Tov</label>
+        <label class="check"><input type="checkbox" id="f-sh-israel"> Keep Israel's calendar
+          <span class="hint">one day of Yom Tov instead of two</span></label>
+
+        <h4>Locations</h4>
+        <p class="hint">Add the place (or places) whose zmanim you want to follow. Elevation shifts sunset by
+        a minute or two; the candle-lighting offset is how long before sunset your community lights — 18
+        minutes in most places, 40 in Jerusalem.</p>
+        <div id="sh-locations" class="list"><div class="empty">No location yet.</div></div>
+        <div class="row gap wrap" style="margin-top:10px">
+          <button class="btn small" id="btn-shloc-add">+ Add a location</button>
+          <label>or start from a known place
+            <select id="f-sh-preset"><option value="">Choose a place…</option></select>
+          </label>
+        </div>
+
+        <h4>Lock when…</h4>
+        <div class="row gap wrap">
+          <label class="flex1">Place <select id="f-sh-start-loc"></select></label>
+          <label class="flex1">Zman <select id="f-sh-start-zman"></select></label>
+          <label class="flex1">Shift by (minutes) <input id="f-sh-start-off" type="number" step="1" value="0"></label>
+        </div>
+        <h4>Unlock when…</h4>
+        <p class="hint">This end has its own place on purpose — lock on one city's candle lighting and unlock
+        on another city's Havdalah if that is what you want.</p>
+        <div class="row gap wrap">
+          <label class="flex1">Place <select id="f-sh-end-loc"></select></label>
+          <label class="flex1">Zman <select id="f-sh-end-zman"></select></label>
+          <label class="flex1">Shift by (minutes) <input id="f-sh-end-off" type="number" step="1" value="0"></label>
+        </div>
+        <label>Start locking this many minutes early
+          <span class="hint">leave blank and the bot works it out from how many groups you have — locking is
+          deliberately slow, so it has to start early enough for the LAST group to be shut before the zman</span>
+          <input id="f-sh-lead" type="number" min="0" step="1" placeholder="auto">
+        </label>
+        <div id="sh-problems"></div>
+        <div id="sh-upcoming" class="muted small" style="margin-top:12px"></div>
+
         <h3>Always-locked groups <span class="hint">stay admins-only even when everything unlocks</span></h3>
         <p class="hint">Tick groups that are permanently admin-post-only. Unlock (manual or scheduled) will skip these.</p>
         <div id="always-locked" class="group-list"><div class="empty">Connect WhatsApp to load groups.</div></div>
