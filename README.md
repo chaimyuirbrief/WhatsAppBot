@@ -97,6 +97,13 @@ change.
   @-mentioning the person involved when they are a member of it, with an
   opt-out list for people who would rather not be tagged
 
+**Consistency**
+- Every phone number, everywhere, is `+<country><area><number>` — no spaces,
+  dashes or brackets, however it was typed in
+- A number with no country code is refused with a reason rather than guessed at
+- Every time, everywhere, is 24-hour; no AM/PM anywhere, including the
+  schedule boxes
+
 **Operations**
 - Web control panel with accounts and roles, scrypt-hashed passwords and an
   audit log of every action taken through it
@@ -271,8 +278,10 @@ First load asks you to set an admin password.
 
 ## Linking your number
 
-Settings → WhatsApp account → enter the number in full international form,
-digits only (`15551234567`), then Dashboard → **Link / Connect**.
+Settings → WhatsApp account → enter the number country code first
+(`+17323523090`), then Dashboard → **Link / Connect**. Brackets, spaces and
+dashes are accepted and stripped — see
+[Numbers and times](#numbers-and-times).
 
 **Pairing code** (default): the panel shows an 8-character code. On the
 phone: WhatsApp → Settings → Linked devices → Link a device → *Link with
@@ -706,6 +715,43 @@ logged. Silently eating messages is a worse failure than missing one.
 
 ---
 
+## Numbers and times
+
+Two formats, used everywhere, with no second style anywhere in the bot.
+
+**A phone number is always `+<country><area><number>`** — `+17323523090`,
+`+447360595428`. No spaces, no dashes, no brackets, no leading zero. That is
+how it is shown in the panel, in announcements, in the audit log and in the
+debug log, and digits-only with the country code first is how it is stored.
+
+You can *type* it however you like. `+1 (732) 352-3090`, `1-732-352-3090` and
+`001 732 352 3090` are all read as the same person and rewritten in the box as
+`+17323523090` the moment you use them. What is refused, with a sentence
+saying so, is a number with **no country code**: `07360595428` could be the UK
+or a dozen other places, and guessing would ban a stranger in Russia rather
+than the person you meant.
+
+**Every time is 24-hour** — `18:29`, `00:05`, `2026-01-16 16:36`. There is no
+AM/PM anywhere, including in the schedule boxes: the window start is a plain
+`HH:MM` text field rather than the browser's native time picker, because that
+widget renders a 12-hour clock wherever the reader's locale says so. `9`,
+`930` and `9.00` are all understood and tidied to `09:00`; `7pm` is refused
+rather than guessed at, because read as 07:00 it would unlock the groups
+twelve hours early.
+
+Dates are written year-first (`2026-01-16`) so they mean the same thing to a
+reader anywhere, and a time that belongs to a place is labelled with that
+place's clock rather than the browser's.
+
+Both rules live in one file, `src/util/format.js`. The control panel is plain
+browser JavaScript with no build step, so it carries a mirrored copy;
+`test/format.test.mjs` runs the same inputs through both and fails if they
+ever disagree, and scans the whole of `src/` and `bin/` so neither a
+`toLocaleString`, a native time picker, nor a hand-rolled `+${number}` can get
+back in.
+
+---
+
 ## Configuration
 
 Everything is in the web UI. Behind it, `data/config.json` holds the
@@ -787,8 +833,11 @@ Shabbos in the diaspora and in Israel, the head start before candle lighting,
 a two-city lock, what happens where a zman has no answer, and a round trip of
 the whole panel through the real markup), the moderation rule decisions and their false-positive guards,
 rules routing, the member roster and identity merging, ban-and-wipe, group
-admin actions, auth and rate limiting, log rotation, and a lint pass over the
-control panel that checks every element the frontend drives actually exists.
+admin actions, auth and rate limiting, log rotation, the one phone-number and
+one time format (including that the panel's mirrored copy of the rules cannot
+drift from the server's, and a scan of the whole source tree so neither format
+can be reintroduced), and a lint pass over the control panel that checks every
+element the frontend drives actually exists.
 No network and no WhatsApp connection needed.
 
 ---
@@ -894,7 +943,8 @@ src/
   config/
     schema.js  store.js
   util/
-    crypto  logger  filelog  mailer  semaphore  format
+    crypto  logger  filelog  mailer  semaphore
+    format.js           the one phone-number format and the one time format
 data/                   config, session, state, logs  (gitignored)
 certs/                  drop a TLS-filter root CA here if your network has one
 ```

@@ -17,6 +17,7 @@ import { runAdminCommand, backupOriginalDescriptions } from './core/admin-comman
 import { MessageIndex } from './core/message-index.js';
 import { MemberActivity } from './core/member-activity.js';
 import { Announcer, EVENT_KEYS, describeEvent } from './core/announce.js';
+import { fmtNumber } from './util/format.js';
 
 const logger = log.scope('main');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -111,8 +112,8 @@ async function main() {
   const activity = stateStore.namespace('group-activity');
   bot.on('group-event', (ev) => {
     activity.push('events', ev, 500);
-    const who = ev.actorNumber ? `+${ev.actorNumber}` : (ev.actor ?? 'someone');
-    const tgt = ev.targets?.map((t) => t.number ? `+${t.number}` : t.jid).filter(Boolean).join(', ');
+    const who = fmtNumber(ev.actorNumber) || (ev.actor ?? 'someone');
+    const tgt = ev.targets?.map((t) => fmtNumber(t.number) || t.jid).filter(Boolean).join(', ');
     logger.info(`👥 ${ev.groupName}: ${ev.action}${tgt ? ` ${tgt}` : ''}${ev.actor ? ` (by ${who})` : ''}`);
 
     const key = EVENT_KEYS[ev.action];

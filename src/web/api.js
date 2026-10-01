@@ -13,7 +13,7 @@ import {
   DEFAULT_ADMIN_SESSION_MINUTES, MAX_SESSION_MINUTES,
 } from './auth.js';
 import { verifyPassword } from '../util/crypto.js';
-import { fmtBytes } from '../util/format.js';
+import { fmtBytes, numberDigits, numberProblem, fmtNumber } from '../util/format.js';
 import { aggregateMembers, memberDetail } from '../core/members.js';
 import { queryAudit, summarize, classify } from '../core/audit.js';
 import {
@@ -574,9 +574,9 @@ export function createApiRouter({ configStore, bot, queue, pluginManager, stateS
       detail.perGroup = Object.fromEntries(Object.entries(detail.perGroup)
         .map(([jid, v]) => [jid, { ...v, subject: names[jid] ?? jid }]));
       detail.banned = (configStore.get().bannedNumbers ?? [])
-        .some((n) => String(n).replace(/[^0-9]/g, '') === member.number);
+        .some((n) => numberDigits(n) === member.number);
       detail.noTag = (configStore.get().announce?.noTag ?? [])
-        .some((n) => String(n).replace(/[^0-9]/g, '') === member.number);
+        .some((n) => numberDigits(n) === member.number);
       res.json(detail);
     } catch (err) {
       res.status(bot.isConnected() ? 400 : 503).json({ error: err.message });
@@ -584,16 +584,17 @@ export function createApiRouter({ configStore, bot, queue, pluginManager, stateS
   });
 
   router.post('/members/ban-all', guard, async (req, res) => {
-    const num = String(req.body?.number ?? '').replace(/[^0-9]/g, '');
-    if (!num) return res.status(400).json({ error: 'no number' });
+    const problem = numberProblem(req.body?.number);
+    if (problem) return res.status(400).json({ error: problem });
+    const num = numberDigits(req.body?.number);
     try {
       const results = await bot.banFromAllGroups(num);
       const wiped = results.wiped ?? { deleted: 0, failed: 0 };
-      // add to the local banned list
-      const banned = new Set((configStore.get().bannedNumbers ?? []).map((x) => String(x).replace(/[^0-9]/g, '')));
+      // add to the local banned list, stored the one way so it matches later
+      const banned = new Set((configStore.get().bannedNumbers ?? []).map(numberDigits).filter(Boolean));
       banned.add(num);
       configStore.update({ bannedNumbers: [...banned] });
-      audit(req, `banned +${num} from all groups (${results.length} affected` +
+      audit(req, `banned ${fmtNumber(num)} from all groups (${results.length} affected` +
         `${wiped.deleted ? `, ${wiped.deleted} message(s) deleted` : ''})`);
       res.json({ ok: true, results, wiped });
     } catch (err) { res.status(400).json({ ok: false, error: friendlyGroupError(err) }); }
@@ -601,14 +602,16 @@ export function createApiRouter({ configStore, bot, queue, pluginManager, stateS
 
   /** action: add | promote | demote across selected groups */
   router.post('/members/across', guard, async (req, res) => {
-    const num = String(req.body?.number ?? '').replace(/[^0-9]/g, '');
+    const problem = numberProblem(req.body?.number);
+    if (problem) return res.status(400).json({ error: problem });
+    const num = numberDigits(req.body?.number);
     const jids = Array.isArray(req.body?.groupJids) ? req.body.groupJids : [];
     const action = req.body?.action;
-    if (!num || !jids.length) return res.status(400).json({ error: 'number and groupJids required' });
+    if (!jids.length) return res.status(400).json({ error: 'groupJids required' });
     if (!['add', 'promote', 'demote'].includes(action)) return res.status(400).json({ error: 'bad action' });
     try {
       const results = await bot.participantAcrossGroups(num, jids, action);
-      audit(req, `${action} +${num} across ${jids.length} group(s)`);
+      audit(req, `${action} ${fmtNumber(num)} across ${jids.length} group(s)`);
       res.json({ ok: true, results });
     } catch (err) { res.status(400).json({ ok: false, error: friendlyGroupError(err) }); }
   });
@@ -617,9 +620,9 @@ export function createApiRouter({ configStore, bot, queue, pluginManager, stateS
     res.json(configStore.get().bannedNumbers ?? []);
   });
   router.delete('/banned/:number', guard, (req, res) => {
-    const num = String(req.params.number).replace(/[^0-9]/g, '');
-    configStore.update({ bannedNumbers: (configStore.get().bannedNumbers ?? []).filter((x) => String(x).replace(/[^0-9]/g, '') !== num) });
-    audit(req, `removed +${num} from the banned list`);
+    const num = numberDigits(req.params.number);
+    configStore.update({ bannedNumbers: (configStore.get().bannedNumbers ?? []).filter((x) => numberDigits(x) !== num) });
+    audit(req, `removed ${fmtNumber(num)} from the banned list`);
     res.json({ ok: true });
   });
 
@@ -716,13 +719,13 @@ export function createApiRouter({ configStore, bot, queue, pluginManager, stateS
 
   /** Mute/unmute a number from being @-tagged in the announcements group. */
   router.post('/notify/no-tag', guard, (req, res) => {
-    const num = String(req.body?.number ?? '').replace(/[^0-9]/g, '');
-    if (!num) return res.status(400).json({ error: 'no number' });
-    const cur = new Set((configStore.get().announce?.noTag ?? [])
-      .map((x) => String(x).replace(/[^0-9]/g, '')).filter(Boolean));
+    const problem = numberProblem(req.body?.number);
+    if (problem) return res.status(400).json({ error: problem });
+    const num = numberDigits(req.body?.number);
+    const cur = new Set((configStore.get().announce?.noTag ?? []).map(numberDigits).filter(Boolean));
     if (req.body?.muted) cur.add(num); else cur.delete(num);
     configStore.update({ announce: { noTag: [...cur] } });
-    audit(req, `${req.body?.muted ? 'muted' : 'unmuted'} announcement tag for +${num}`);
+    audit(req, `${req.body?.muted ? 'muted' : 'unmuted'} announcement tag for ${fmtNumber(num)}`);
     res.json({ ok: true, noTag: [...cur] });
   });
 

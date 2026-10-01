@@ -5,6 +5,7 @@ import pino from 'pino';
 import qrcode from 'qrcode';
 import log from '../util/logger.js';
 import { pacedSocket } from './paced-socket.js';
+import { fmtNumber, numberDigits } from '../util/format.js';
 
 const logger = log.scope('bot');
 
@@ -90,18 +91,6 @@ function senderNumberFrom(raw, key, chatJid, isGroup) {
     if (n) return n;
   }
   return null;
-}
-
-/** Human-friendly rendering: +1 (424) 428-4888 for US, +<digits> otherwise. */
-function formatPhone(num) {
-  if (!num) return null;
-  if (num.length === 11 && num.startsWith('1')) {
-    return `+1 (${num.slice(1, 4)}) ${num.slice(4, 7)}-${num.slice(7)}`;
-  }
-  if (num.length === 10) {
-    return `(${num.slice(0, 3)}) ${num.slice(3, 6)}-${num.slice(6)}`;
-  }
-  return `+${num}`;
 }
 
 /**
@@ -382,7 +371,7 @@ export class WhatsAppBot extends EventEmitter {
     this.sock.ev.on('groups.update', () => this.scheduleGroupRefresh(120_000));
 
     if (usePairing) {
-      const phone = String(cfg.phoneNumber || '').replace(/[^0-9]/g, '');
+      const phone = numberDigits(cfg.phoneNumber);
       if (!phone) {
         this.lastError = 'Set your WhatsApp phone number in Settings before linking.';
         this._setState('error');
@@ -394,7 +383,7 @@ export class WhatsAppBot extends EventEmitter {
       try {
         const code = await this.sock.requestPairingCode(phone);
         this.pairingCode = code?.match(/.{1,4}/g)?.join('-') ?? code;
-        logger.info(`pairing code issued for +${phone}: ${this.pairingCode}`);
+        logger.info(`pairing code issued for ${fmtNumber(phone)}: ${this.pairingCode}`);
         this.emit('state', this.status());
       } catch (err) {
         this.lastError = `Could not request pairing code: ${err.message}`;
@@ -445,7 +434,7 @@ export class WhatsAppBot extends EventEmitter {
       fromMe: !!key.fromMe,
       senderJid,
       senderNumber,
-      senderNumberDisplay: formatPhone(senderNumber),
+      senderNumberDisplay: fmtNumber(senderNumber) || null,
       pushName: raw.pushName ?? null,
       text: String(text || '').trim(),
       timestamp: Number(raw.messageTimestamp ?? 0) * 1000,
@@ -803,7 +792,7 @@ export class WhatsAppBot extends EventEmitter {
         }
         const pn = pp.phoneNumber ?? pp.jid;
         if (typeof pn === 'string') {
-          const digits = pn.replace(/[^0-9]/g, '');
+          const digits = numberDigits(pn);
           if (digits.length >= 7) { memberNumbers.add(digits); if (!number) number = digits; }
         }
         members.push({ id: pp.id ?? null, number: number || null, admin: pp.admin ?? null });
@@ -899,7 +888,7 @@ export class WhatsAppBot extends EventEmitter {
       botIsAdmin: !!meta.participants?.find((p) => p.admin && this.isSelf(p.id)),
       members: (meta.participants ?? []).map((p) => ({
         id: p.id,
-        number: this.numberFromJid(p.id) ?? (p.phoneNumber ? String(p.phoneNumber).replace(/[^0-9]/g, '') : null),
+        number: this.numberFromJid(p.id) ?? (numberDigits(p.phoneNumber) || null),
         admin: p.admin ?? null,
       })).sort((a, b) => (b.admin ? 1 : 0) - (a.admin ? 1 : 0)),
     };
@@ -935,7 +924,7 @@ export class WhatsAppBot extends EventEmitter {
     const jids = (Array.isArray(targets) ? targets : [targets]).map((t) => {
       const v = String(t).trim();
       if (v.includes('@')) return v;
-      return `${v.replace(/[^0-9]/g, '')}@s.whatsapp.net`;
+      return `${numberDigits(v)}@s.whatsapp.net`;
     });
     const results = [];
     for (let i = 0; i < jids.length; i += 5) {
@@ -1043,7 +1032,7 @@ export class WhatsAppBot extends EventEmitter {
   /** Raw participant update for one group (used by the cross-group helpers). */
   async _rawParticipant(jid, number, action) {
     const sock = this._requireSock();
-    const target = `${String(number).replace(/[^0-9]/g, '')}@s.whatsapp.net`;
+    const target = `${numberDigits(number)}@s.whatsapp.net`;
     const res = await sock.groupParticipantsUpdate(jid, [target], action);
     return res?.[0]?.status ?? null;
   }
@@ -1078,7 +1067,7 @@ export class WhatsAppBot extends EventEmitter {
       }
     }
     if (deleted || failed) {
-      logger.info(`wiped ${deleted} message(s) from ${number ? `+${number}` : jid}` +
+      logger.info(`wiped ${deleted} message(s) from ${fmtNumber(number) || jid}` +
         `${failed ? ` (${failed} could not be deleted)` : ''}`);
     }
     this.messageIndex.forget({ number, jid });
@@ -1099,7 +1088,7 @@ export class WhatsAppBot extends EventEmitter {
     let wiped = { deleted: 0, failed: 0, groups: [] };
     if (wipeMessages) {
       try { wiped = await this.deleteRecentMessagesFrom({ number }); }
-      catch (err) { logger.warn(`could not wipe messages for +${number}: ${err.message}`); }
+      catch (err) { logger.warn(`could not wipe messages for ${fmtNumber(number)}: ${err.message}`); }
     }
     const results = [];
     for (const g of this.groups()) {
@@ -1117,7 +1106,7 @@ export class WhatsAppBot extends EventEmitter {
     // We changed the membership, so the cache IS stale: force it, but debounced
     // and through the paced socket rather than as an immediate extra call.
     this.scheduleGroupRefresh({ delay: 5_000, force: true });
-    logger.info(`banned +${number} from ${results.length} group(s)`);
+    logger.info(`banned ${fmtNumber(number)} from ${results.length} group(s)`);
     results.wiped = wiped;
     return results;
   }
@@ -1141,7 +1130,7 @@ export class WhatsAppBot extends EventEmitter {
     // We changed the membership, so the cache IS stale: force it, but debounced
     // and through the paced socket rather than as an immediate extra call.
     this.scheduleGroupRefresh({ delay: 5_000, force: true });
-    logger.info(`${action} +${number} across ${groupJids.length} group(s)`);
+    logger.info(`${action} ${fmtNumber(number)} across ${groupJids.length} group(s)`);
     return results;
   }
 
@@ -1152,7 +1141,7 @@ export class WhatsAppBot extends EventEmitter {
    */
   groupMemberInfo(groupJid, { jid = null, number = null } = {}) {
     const g = this.groupCache.get(groupJid);
-    const digits = number ? String(number).replace(/[^0-9]/g, '') : null;
+    const digits = numberDigits(number) || null;
     if (!g) return { isMember: false, mentionJid: null, mentionText: digits };
 
     const isMember =
@@ -1169,7 +1158,7 @@ export class WhatsAppBot extends EventEmitter {
   isGroupAdmin(groupJid, { jid = null, number = null } = {}) {
     const g = this.groupCache.get(groupJid);
     if (!g?.members) return false;
-    const digits = number ? String(number).replace(/[^0-9]/g, '') : null;
+    const digits = numberDigits(number) || null;
     return g.members.some((m) => !!m.admin && (
       (jid && m.id === jid) ||
       (digits && (m.number === digits || m.id === `${digits}@s.whatsapp.net`))
@@ -1215,7 +1204,7 @@ export class WhatsAppBot extends EventEmitter {
       if (bare && domain) { out.add(`${bare}@${domain}`); out.add(v); }
     };
     add(u.id); add(u.lid); add(u.jid);
-    const digits = String(u.id ?? '').split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+    const digits = numberDigits(String(u.id ?? '').split('@')[0].split(':')[0]);
     if (digits.length >= 7) out.add(`${digits}@s.whatsapp.net`);
     return out;
   }

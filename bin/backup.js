@@ -19,6 +19,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { fmtDateTime } from '../src/util/format.js';
 import {
   collectBackup, packBackup, unpackBackup, inspectBackup, restoreBackup,
   backupFilename, safeManifest, SECTIONS, MIN_PASSPHRASE,
@@ -126,7 +127,7 @@ function cmdInspect(args) {
   // rewrite the line above, so it goes through the same filter as the portal.
   const m = safeManifest(header.manifest ?? {});
   say(`\n${bold(path.basename(file))}`);
-  say(`  made         ${m.createdAt ? new Date(m.createdAt).toLocaleString() : 'unknown'}`);
+  say(`  made         ${fmtDateTime(m.createdAt) || 'unknown'}`);
   say(`  app version  ${m.app ?? 'unknown'}${m.node ? dim(`  (node ${m.node})`) : ''}`);
   say(`  contents     ${(m.sections ?? []).join(', ') || 'unknown'}`);
   say(`  files        ${m.fileCount ?? '?'} ${m.bytes ? dim(`(${fmtBytes(m.bytes)} uncompressed)`) : ''}`);

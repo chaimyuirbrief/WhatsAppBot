@@ -1,4 +1,5 @@
 import log from '../util/logger.js';
+import { fmtNumber, numberDigits } from '../util/format.js';
 
 const logger = log.scope('announce');
 
@@ -52,8 +53,8 @@ export class Announcer {
     let groupMentions = null;
     let tagged = false;
 
-    const digits = String(who?.number ?? '').replace(/[^0-9]/g, '');
-    const muted = (cfg.noTag ?? []).some((x) => String(x).replace(/[^0-9]/g, '') === digits);
+    const digits = numberDigits(who?.number);
+    const muted = (cfg.noTag ?? []).some((x) => numberDigits(x) === digits);
 
     if (!muted && cfg.tagActor !== false && (who?.number || who?.jid)) {
       const info = this.bot.groupMemberInfo(cfg.group, { jid: who.jid, number: who.number });
@@ -81,7 +82,7 @@ export class Announcer {
 
     try {
       await this.bot.sendText(cfg.group, body, { mentions, groupMentions });
-      this.log.info(`🔔 announce [${event ?? '-'}] ${tagged ? `tagged ${who.number}` : 'no tag'}` +
+      this.log.info(`🔔 announce [${event ?? '-'}] ${tagged ? `tagged ${fmtNumber(who.number)}` : 'no tag'}` +
         `${groupMentions ? ' +group' : ''}: ${text}`);
     } catch (err) {
       this.log.warn(`announce (${event}) failed: ${err.message}`);
@@ -104,10 +105,10 @@ export const EVENT_KEYS = {
 /** Human sentence for a group-event, with `{group}` left for the announcer. */
 export function describeEvent(ev) {
   const who = (ev.targets ?? [])
-    .map((t) => (t.number ? `+${t.number}` : t.jid))
+    .map((t) => fmtNumber(t.number) || t.jid)
     .filter(Boolean)
     .join(', ');
-  const by = ev.actorNumber ? ` by +${ev.actorNumber}` : '';
+  const by = ev.actorNumber ? ` by ${fmtNumber(ev.actorNumber)}` : '';
 
   switch (ev.action) {
     case 'add':

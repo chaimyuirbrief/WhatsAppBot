@@ -1,5 +1,7 @@
 <!doctype html>
-<html lang="en">
+<!-- en-GB, not en: it is what makes any native date/time widget render on a
+     24-hour clock instead of with AM/PM. -->
+<html lang="en-GB">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -118,8 +120,8 @@
 
       <div class="card">
         <h2>WhatsApp account</h2>
-        <label>Phone number <span class="hint">digits only, with country code — e.g. 15551234567</span>
-          <input id="f-phone" placeholder="15551234567" inputmode="numeric">
+        <label>Phone number <span class="hint">country code first, nothing else in it — e.g. +17323523090</span>
+          <input id="f-phone" placeholder="+17323523090" inputmode="tel">
         </label>
         <label>Link method
           <select id="f-loginmethod">
@@ -158,7 +160,7 @@
         <label class="check"><input type="checkbox" id="f-ann-tagactor"> @-mention the person the event is about <span class="hint">only when they're in this group</span></label>
         <label class="check"><input type="checkbox" id="f-ann-taggroup"> @-mention the group it happened in <span class="hint">same community only</span></label>
         <label>Never @-tag these numbers <span class="hint">opt-outs — one per line or comma separated; the update is still posted, just without the ping</span>
-          <textarea id="f-ann-notag" rows="2" placeholder="15551234567"></textarea>
+          <textarea id="f-ann-notag" rows="2" placeholder="+17323523090"></textarea>
         </label>
 
         <h3>Which events to post</h3>
@@ -352,9 +354,9 @@ npm start</pre>
           <span id="ga-desc-note" class="muted small"></span>
         </div>
 
-        <h3>Add a member <span class="hint">phone number with country code, digits only</span></h3>
+        <h3>Add a member <span class="hint">country code first — +17323523090</span></h3>
         <div class="row gap">
-          <input id="ga-add-num" placeholder="15551234567" inputmode="numeric" class="flex1">
+          <input id="ga-add-num" placeholder="+17323523090" inputmode="tel" class="flex1">
           <button class="btn small primary" id="ga-add-btn">Add</button>
         </div>
         <div id="ga-add-note" class="muted small" style="margin-top:6px"></div>
@@ -494,8 +496,8 @@ npm start</pre>
 
       <div class="card">
         <h2>Member actions across groups</h2>
-        <label>Phone number <span class="hint">digits + country code</span>
-          <input id="mx-num" placeholder="15551234567" inputmode="numeric">
+        <label>Phone number <span class="hint">country code first — +17323523090</span>
+          <input id="mx-num" placeholder="+17323523090" inputmode="tel">
         </label>
         <label>Apply to groups</label>
         <div class="row gap" style="margin-bottom:8px">
@@ -517,7 +519,7 @@ npm start</pre>
       <div class="card">
         <h2>Banned numbers <span id="banned-count" class="badge">0</span></h2>
         <div class="row gap" style="margin-bottom:10px">
-          <input id="ban-add-num" placeholder="add a number to the banned list" class="flex1">
+          <input id="ban-add-num" placeholder="+17323523090" inputmode="tel" class="flex1">
           <button class="btn small" id="ban-add">Add</button>
         </div>
         <div id="banned-list" class="list"><div class="empty">No banned numbers.</div></div>

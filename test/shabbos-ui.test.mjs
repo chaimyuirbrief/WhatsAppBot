@@ -35,15 +35,20 @@ function mount() {
   const block = appJs.match(/\/\* -+ automatic Shabbos \/ Yom Tov lock -+ \*\/[\s\S]*?\nfunction collectForm\(/);
   if (!block) throw new Error('could not find the Shabbos block in app.js');
   const escSrc = appJs.match(/function esc\(s\) \{[\s\S]*?\n\}/)[0];
+  // The shared number/time helpers the panel is built on, so this runs the
+  // real ones rather than a stand-in.
+  const fmtSrc = appJs.match(/\/\* -+ numbers and times -+ \*\/[\s\S]*?\n\/\* -+ toast/)[0]
+    .replace(/\n\/\* -+ toast$/, '');
   const src = block[0].replace(/\nfunction collectForm\($/, '');
   const make = new Function('document', 'window', 'api', `
     "use strict";
     const $ = (id) => document.getElementById(id);
     ${escSrc}
+    ${fmtSrc}
     ${src}
     return {
       fillShabbosForm, collectShabbos, collectShLocations, renderShLocations,
-      renderShPickers, numOrBlank, fmtAtZone, lockZone, shortZone, SH_PRESETS,
+      renderShPickers, numOrBlank, fmtTime, fmtDayTime, lockZone, shortZone, SH_PRESETS,
       setZmanOptions: (o) => { ZMAN_OPTIONS = o; },
       $,
     };
@@ -188,10 +193,12 @@ console.log('=== times are shown on the clock they belong to ===');
   // A Jerusalem Havdalah read by an admin in New York must show Jerusalem's
   // clock, not the browser's.
   const t = Date.UTC(2026, 0, 17, 16, 10, 0);
-  ok(ui.fmtAtZone(t, 'Asia/Jerusalem') === '18:10', `Jerusalem shows 18:10 (${ui.fmtAtZone(t, 'Asia/Jerusalem')})`);
-  ok(ui.fmtAtZone(t, 'America/New_York') === '11:10', `New York shows 11:10 (${ui.fmtAtZone(t, 'America/New_York')})`);
-  ok(ui.fmtAtZone(t, 'Asia/Jerusalem', true).includes('18:10'), 'the dated form keeps the time');
-  ok(typeof ui.fmtAtZone(t, 'Mars/Olympus') === 'string', 'an unusable zone still renders something rather than throwing');
+  ok(ui.fmtTime(t, 'Asia/Jerusalem') === '18:10', `Jerusalem shows 18:10 (${ui.fmtTime(t, 'Asia/Jerusalem')})`);
+  ok(ui.fmtTime(t, 'America/New_York') === '11:10', `New York shows 11:10 (${ui.fmtTime(t, 'America/New_York')})`);
+  ok(ui.fmtDayTime(t, 'Asia/Jerusalem') === 'Sat 2026-01-17 18:10',
+     `the dated form is 24-hour and unambiguous (${ui.fmtDayTime(t, 'Asia/Jerusalem')})`);
+  ok(!/[ap]m/i.test(ui.fmtDayTime(t, 'Asia/Jerusalem')), 'with no am or pm anywhere in it');
+  ok(ui.fmtTime(t, 'Mars/Olympus') === '', 'an unusable zone renders nothing rather than throwing');
 
   // Which clock a lock time is shown on.
   const shabbosWin = { timezone: 'America/New_York', shabbos: { lockBy: 1, start: { timezone: 'America/Chicago' }, end: { timezone: 'Asia/Jerusalem' } } };

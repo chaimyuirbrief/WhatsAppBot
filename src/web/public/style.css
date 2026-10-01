@@ -106,6 +106,8 @@ main { padding: 16px; max-width: 940px; margin: 0 auto; padding-bottom: 60px; }
   text-transform: uppercase; letter-spacing: .04em; }
 /* A step inside a section (the Shabbos lock's locations / the two ends). */
 .card h4 { margin: 16px 0 6px; font-size: 12px; font-weight: 600; color: var(--fg); }
+/* A time box whose contents cannot be read as 24-hour HH:MM. */
+.bad-input { border-color: var(--danger) !important; }
 .badge {
   background: var(--line); color: var(--muted); border-radius: 999px;
   padding: 1px 8px; font-size: 12px; font-weight: 600;

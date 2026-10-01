@@ -1,3 +1,4 @@
+import { fmtNumber } from '../util/format.js';
 /**
  * Pure helpers for the cross-group member roster and per-member detail page.
  *
@@ -113,7 +114,7 @@ export function memberTimeline(events = [], member = {}) {
       action: ev.action,
       groupJid: ev.groupJid,
       groupName: ev.groupName,
-      by: ev.actorNumber ? `+${ev.actorNumber}` : (ev.actor ?? null),
+      by: fmtNumber(ev.actorNumber) || (ev.actor ?? null),
     });
   }
   hits.sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));

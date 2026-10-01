@@ -49,6 +49,92 @@ let CONFIG = null;
 let GROUPS = [];
 let SETUP_MODE = false;
 
+/* ----------------------- numbers and times ------------------------ */
+/* A MIRROR of src/util/format.js. The panel is plain browser JavaScript with
+   no build step, so it cannot import the server's copy; test/format.test.mjs
+   runs the same table of inputs through both and fails if they ever disagree.
+   Change one, change the other.
+
+   The rule both enforce: a phone number is always `+<country><area><number>`
+   with nothing else in it, and a time is always 24-hour. */
+
+const MIN_NUMBER_DIGITS = 7;
+const MAX_NUMBER_DIGITS = 15;
+
+/** Digits only, country code first. Lenient: it has to recognise the same
+    person however they were typed in. */
+function numberDigits(value) {
+  const d = String(value ?? '').replace(/[^0-9]/g, '');
+  return d.startsWith('00') ? d.slice(2) : d;
+}
+
+/** The one way a number is ever shown. Empty if there is none. */
+function fmtNumber(value) {
+  const d = numberDigits(value);
+  return d ? `+${d}` : '';
+}
+
+/** Why this is not a usable number, as a sentence, or null if it is fine. */
+function numberProblem(value) {
+  if (!String(value ?? '').trim()) return 'Enter a phone number.';
+  const d = numberDigits(value);
+  if (!d) return 'That has no digits in it.';
+  if (d.startsWith('0')) {
+    return 'Start with the country code rather than a 0 — +1 for the US and Canada, +44 for the UK, +972 for Israel.';
+  }
+  if (d.length < MIN_NUMBER_DIGITS) {
+    return `That is only ${d.length} digits — include the country code, like +17325551234.`;
+  }
+  if (d.length > MAX_NUMBER_DIGITS) {
+    return `That is ${d.length} digits; a phone number is at most ${MAX_NUMBER_DIGITS}.`;
+  }
+  return null;
+}
+
+/** 24-hour pieces of an instant, in `timeZone` or this browser's own zone. */
+function timeParts(when, timeZone) {
+  if (when === null || when === undefined || when === '') return null;
+  const d = when instanceof Date ? when : new Date(when);
+  if (Number.isNaN(d.getTime())) return null;
+  let parts;
+  try {
+    parts = new Intl.DateTimeFormat('en-GB', {
+      ...(timeZone ? { timeZone } : {}),
+      hourCycle: 'h23',
+      weekday: 'short',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    }).formatToParts(d);
+  } catch {
+    return null;
+  }
+  const p = {};
+  for (const { type, value } of parts) p[type] = value;
+  return p;
+}
+
+const fmtTime = (when, tz) => { const p = timeParts(when, tz); return p ? `${p.hour}:${p.minute}` : ''; };
+const fmtDate = (when, tz) => { const p = timeParts(when, tz); return p ? `${p.year}-${p.month}-${p.day}` : ''; };
+const fmtDateTime = (when, tz) => { const p = timeParts(when, tz); return p ? `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}` : ''; };
+const fmtDateTimeSec = (when, tz) => { const p = timeParts(when, tz); return p ? `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}` : ''; };
+const fmtDayTime = (when, tz) => { const p = timeParts(when, tz); return p ? `${p.weekday} ${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}` : ''; };
+
+/** A wall-clock time typed into a form, as 24-hour `HH:MM`, or '' if it
+    cannot be read as one. Only digits and a separator, which is what refuses
+    `7pm`: read as 07:00 it would unlock the groups twelve hours early. */
+function parseClock(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  const sep = /^(\d{1,2})\s*[:.]\s*(\d{1,2})$/.exec(raw);
+  const bare = /^(\d{1,4})$/.exec(raw);
+  if (!sep && !bare) return '';
+  const whole = bare ? bare[1] : '';
+  const hh = Number(sep ? sep[1] : (whole.length <= 2 ? whole : whole.slice(0, -2)));
+  const mi = Number(sep ? sep[2] : (whole.length <= 2 ? 0 : whole.slice(-2)));
+  if (hh > 23 || mi > 59) return '';
+  return `${String(hh).padStart(2, '0')}:${String(mi).padStart(2, '0')}`;
+}
+
 /* ------------------------------ toast ------------------------------ */
 let toastTimer;
 function toast(msg, bad = false) {
@@ -176,7 +262,7 @@ function fillForm(c) {
   const gr = c.groupRules ?? {};
   const an = c.announce ?? {};
 
-  $('f-phone').value = wa.phoneNumber ?? '';
+  $('f-phone').value = fmtNumber(wa.phoneNumber);
   $('f-loginmethod').value = wa.loginMethod ?? 'pairing';
   $('f-autoreconnect').checked = !!wa.autoReconnect;
   $('f-markonline').checked = !!wa.markOnline;
@@ -199,7 +285,7 @@ function fillForm(c) {
   // Announcements. The group picker is filled once the group list arrives.
   $('f-ann-tagactor').checked = an.tagActor !== false;
   $('f-ann-taggroup').checked = an.tagGroup !== false;
-  $('f-ann-notag').value = (an.noTag ?? []).join('\n');
+  $('f-ann-notag').value = (an.noTag ?? []).map(fmtNumber).filter(Boolean).join('\n');
   const ev = an.events ?? {};
   for (const k of ANNOUNCE_EVENTS) $(`f-ann-ev-${k}`).checked = ev[k] !== false;
 
@@ -352,12 +438,24 @@ function collectGroupRules() {
 }
 
 /* ------------------------- lockdown windows ------------------------- */
+/**
+ * A plain text box rather than a native time input: that widget renders a
+ * 12-hour picker wherever the browser's locale says so, and this bot is
+ * 24-hour everywhere. Tidies what was typed as soon as the box loses focus,
+ * so `9`, `900` and `9.00` all settle to `09:00`.
+ */
+window.normalizeClockBox = (el) => {
+  const tidy = parseClock(el.value);
+  el.value = tidy || el.value;
+  el.classList.toggle('bad-input', !tidy && !!el.value.trim());
+};
+
 function normalizeWindow(w) {
   return {
     id: w?.id || `w${Math.random().toString(36).slice(2, 8)}`,
     label: w?.label ?? '',
     day: Number.isFinite(+w?.day) ? +w.day : 0,
-    start: /^\d{1,2}:\d{2}$/.test(w?.start ?? '') ? w.start : '09:00',
+    start: parseClock(w?.start) || '09:00',
     durationMinutes: +w?.durationMinutes > 0 ? +w.durationMinutes : 60,
     enabled: w?.enabled !== false,
   };
@@ -373,7 +471,9 @@ function renderLockWindows() {
         <label class="flex1">Day
           <select class="w-day">${DAY_NAMES.map((d, n) => `<option value="${n}" ${n === w.day ? 'selected' : ''}>${d}</option>`).join('')}</select>
         </label>
-        <label class="flex1">Starts<input class="w-start" type="time" value="${esc(w.start)}"></label>
+        <label class="flex1">Starts <span class="hint">24-hour, HH:MM</span>
+          <input class="w-start" type="text" inputmode="numeric" pattern="[0-2][0-9]:[0-5][0-9]"
+                 placeholder="18:00" value="${esc(w.start)}" onblur="normalizeClockBox(this)"></label>
         <label class="flex1">Lasts (minutes)<input class="w-dur" type="number" min="1" value="${w.durationMinutes}"></label>
       </div>
       <label>Label <span class="hint">optional - shown in the log and the announcement</span>
@@ -477,18 +577,6 @@ function shLocation(raw) {
     timezone: raw?.timezone ?? '',
     candleOffsetMinutes: numOrBlank(raw?.candleOffsetMinutes) === '' ? 18 : numOrBlank(raw?.candleOffsetMinutes),
   };
-}
-
-/** A time in the zone it belongs to - not the browser's. An admin in New York
-    checking a Jerusalem Havdalah must see the Jerusalem clock. */
-function fmtAtZone(when, tz, withDate = false) {
-  const d = new Date(when);
-  try {
-    return new Intl.DateTimeFormat([], {
-      timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-      ...(withDate ? { weekday: 'short', month: 'short', day: 'numeric' } : {}),
-    }).format(d);
-  } catch { return d.toLocaleString(); }
 }
 
 /**
@@ -657,10 +745,10 @@ function renderShUpcoming(error = '') {
       <div class="item">
         <b>${esc(w.label)}</b>
         <div>🔒 ${esc(w.start.zmanLabel)} at ${esc(w.start.location)} is
-          <b>${fmtAtZone(w.start.at, w.start.timezone, true)}</b>${w.start.fallback ? ' <span class="warn">(approximated from sunset at this latitude)</span>' : ''}
+          <b>${fmtDayTime(w.start.at, w.start.timezone)}</b>${w.start.fallback ? ' <span class="warn">(approximated from sunset at this latitude)</span>' : ''}
           ${w.leadMinutes ? `— locking starts ${w.leadMinutes} min earlier so the last group is shut in time` : ''}</div>
         <div>🔓 ${esc(w.end.zmanLabel)} at ${esc(w.end.location)} is
-          <b>${fmtAtZone(w.end.at, w.end.timezone, true)}</b>${w.end.fallback ? ' <span class="warn">(approximated from sunset at this latitude)</span>' : ''}</div>
+          <b>${fmtDayTime(w.end.at, w.end.timezone)}</b>${w.end.fallback ? ' <span class="warn">(approximated from sunset at this latitude)</span>' : ''}</div>
       </div>`).join('');
 }
 
@@ -697,7 +785,7 @@ window.shCheckTimes = async (i) => {
     const keys = Object.keys(r.times).filter((k) => r.times[k]);
     const day = `${r.date.y}-${String(r.date.m).padStart(2, '0')}-${String(r.date.d).padStart(2, '0')}`;
     out.innerHTML = `<div style="margin-top:6px">${esc(day)}, ${esc(r.timezone)}:</div>`
-      + keys.map((k) => `<div>${esc(r.times[k].label)} — <b>${fmtAtZone(r.times[k].at, r.timezone)}</b>`
+      + keys.map((k) => `<div>${esc(r.times[k].label)} — <b>${fmtTime(r.times[k].at, r.timezone)}</b>`
         + `${r.times[k].fallback ? ' <span class="warn">(approximated from sunset)</span>' : ''}</div>`).join('');
   } catch (err) {
     out.innerHTML = `<span style="color:var(--danger)">${esc(err.message)}</span>`;
@@ -726,7 +814,7 @@ function collectForm() {
 
   return {
     whatsapp: {
-      phoneNumber: $('f-phone').value.replace(/[^0-9]/g, ''),
+      phoneNumber: numberDigits($('f-phone').value),
       loginMethod: $('f-loginmethod').value,
       autoReconnect: $('f-autoreconnect').checked,
       markOnline: $('f-markonline').checked,
@@ -739,7 +827,7 @@ function collectForm() {
       group: $('f-ann-group').value,
       tagActor: $('f-ann-tagactor').checked,
       tagGroup: $('f-ann-taggroup').checked,
-      noTag: $('f-ann-notag').value.split(/[\n,]/).map((x) => x.replace(/[^0-9]/g, '')).filter(Boolean),
+      noTag: $('f-ann-notag').value.split(/[\n,]/).map(numberDigits).filter(Boolean),
       events: Object.fromEntries(ANNOUNCE_EVENTS.map((k) => [k, $(`f-ann-ev-${k}`).checked])),
     },
     queue: {
@@ -775,7 +863,7 @@ $('btn-save').addEventListener('click', async () => {
     const deliberate = listWasRendered && (form.moderation.groups ?? []).length === 0;
     CONFIG = await api('PUT', `/config${deliberate ? '?allowEmptyGroups=1' : ''}`, form);
     fillForm(CONFIG);
-    $('save-note').textContent = `Saved ${new Date().toLocaleTimeString()}`;
+    $('save-note').textContent = `Saved ${fmtTime(Date.now())}`;
     toast('Settings saved');
     loadDiagnostics();
   } catch (err) {
@@ -1099,7 +1187,8 @@ async function loadLogs() {
   } catch { /* not fatal */ }
 }
 function logLine(l) {
-  const t = new Date(l.ts).toLocaleTimeString();
+  const t = fmtDateTimeSec(l.ts).slice(11);        // HH:MM:SS; the date is in the file name
+
   return `<span class="lg-${l.level}"><span class="lg-ts">${t}</span> [${l.level}] (${esc(l.scope)}) ${esc(l.msg)}</span>\n`;
 }
 function scrollLog() {
@@ -1175,7 +1264,7 @@ async function loadLogFiles() {
           <span class="item-title">${esc(f.name)}</span>
           <span class="muted small">${fmtBytes(f.size)}${f.gzipped ? ' · gzipped' : ''}</span>
         </div>
-        <div class="item-sub">${new Date(f.mtime).toLocaleString()}</div>
+        <div class="item-sub">${fmtDateTime(f.mtime)}</div>
         <div class="row gap" style="margin-top:8px">
           <button class="btn small" onclick="viewLogFile('${esc(f.name)}')">View</button>
           <a class="btn small" href="/api/logs/download/${encodeURIComponent(f.name)}">Download</a>
@@ -1290,8 +1379,8 @@ async function loadLockdown({ statusOnly = false } = {}) {
             ${st.enabled ? 'Weekly schedule ON' : 'Weekly schedule off'}
             ${st.shabbos?.enabled ? ` · Shabbos lock ON${st.shabbos.includeYomTov ? ' + Yom Tov' : ''}` : ' · Shabbos lock off'}
             ${st.windowLabel ? ` · next: ${esc(st.windowLabel)}` : ''}
-            ${st.nextLockAt ? ` · lock ${esc(fmtAtZone(st.nextLockAt, lockZone(st, 'start'), true))} ${esc(shortZone(lockZone(st, 'start')))}` : ''}
-            ${st.nextUnlockAt ? ` · unlock ${esc(fmtAtZone(st.nextUnlockAt, lockZone(st, 'end'), true))} ${esc(shortZone(lockZone(st, 'end')))}` : ''}
+            ${st.nextLockAt ? ` · lock ${esc(fmtDayTime(st.nextLockAt, lockZone(st, 'start')))} ${esc(shortZone(lockZone(st, 'start')))}` : ''}
+            ${st.nextUnlockAt ? ` · unlock ${esc(fmtDayTime(st.nextUnlockAt, lockZone(st, 'end')))} ${esc(shortZone(lockZone(st, 'end')))}` : ''}
           </div>
           ${renderLockRun(st.run, paceSecs)}
           ${!st.run && st.lastRun?.error ? `<div class="muted small" style="margin-top:8px">last ${esc(st.lastRun.action)} failed: ${esc(st.lastRun.error)}</div>` : ''}
@@ -1364,11 +1453,13 @@ $('mx-all')?.addEventListener('click', () => document.querySelectorAll('.mx-g').
 $('mx-none')?.addEventListener('click', () => document.querySelectorAll('.mx-g').forEach((i) => (i.checked = false)));
 
 async function mxAcross(action, verb) {
-  const number = $('mx-num').value.replace(/[^0-9]/g, '');
+  const problem = numberProblem($('mx-num').value);
+  if (problem) return toast(problem, true);
+  const number = numberDigits($('mx-num').value);
+  $('mx-num').value = fmtNumber(number);          // show it back the one way
   const groupJids = mxSelected();
-  if (!number) return toast('Enter a number', true);
   if (!groupJids.length) return toast('Select at least one group', true);
-  if ((action === 'demote') && !confirm(`Remove admin from +${number} on ${groupJids.length} group(s)?`)) return;
+  if ((action === 'demote') && !confirm(`Remove admin from ${fmtNumber(number)} on ${groupJids.length} group(s)?`)) return;
   $('mx-note').textContent = `${verb}…`;
   try {
     const r = await api('POST', '/members/across', { number, groupJids, action });
@@ -1382,9 +1473,11 @@ $('mx-promote')?.addEventListener('click', () => mxAcross('promote', 'Promoting'
 $('mx-demote')?.addEventListener('click', () => mxAcross('demote', 'Demoting'));
 
 $('mx-banall')?.addEventListener('click', async () => {
-  const number = $('mx-num').value.replace(/[^0-9]/g, '');
-  if (!number) return toast('Enter a number', true);
-  if (!confirm(`BAN +${number} from ALL groups and add to the banned list? This removes them everywhere.`)) return;
+  const problem = numberProblem($('mx-num').value);
+  if (problem) return toast(problem, true);
+  const number = numberDigits($('mx-num').value);
+  $('mx-num').value = fmtNumber(number);
+  if (!confirm(`BAN ${fmtNumber(number)} from ALL groups and add to the banned list? This removes them everywhere.`)) return;
   $('mx-note').textContent = 'banning from all groups…';
   try {
     const r = await api('POST', '/members/ban-all', { number });
@@ -1404,16 +1497,17 @@ async function loadBanned() {
     box.innerHTML = list.length ? list.map((n) => `
       <div class="item compact">
         <div class="item-top">
-          <span class="item-title">+${esc(n)}</span>
+          <span class="item-title">${esc(fmtNumber(n))}</span>
           <button class="btn tiny" onclick="unban('${esc(n)}')">Remove from list</button>
         </div>
       </div>`).join('') : '<div class="empty">No banned numbers.</div>';
   } catch { /* ignore */ }
 }
-window.unban = async (n) => { await api('DELETE', `/banned/${encodeURIComponent(n)}`); toast(`+${n} removed from banned list`); loadBanned(); };
+window.unban = async (n) => { await api('DELETE', `/banned/${encodeURIComponent(n)}`); toast(`${fmtNumber(n)} removed from banned list`); loadBanned(); };
 $('ban-add')?.addEventListener('click', async () => {
-  const n = $('ban-add-num').value.replace(/[^0-9]/g, '');
-  if (!n) return;
+  const problem = numberProblem($('ban-add-num').value);
+  if (problem) return toast(problem, true);
+  const n = numberDigits($('ban-add-num').value);
   // banning locally only (no group removal) — just add to the list
   try {
     const cur = await api('GET', '/banned');
@@ -1534,7 +1628,7 @@ async function bkSend(path, extraHeaders = {}) {
  * though the server also filters it — this string goes into innerHTML.
  */
 function bkDescribe(m) {
-  return `made ${m.createdAt ? new Date(m.createdAt).toLocaleString() : 'unknown'}`
+  return `made ${m.createdAt ? fmtDateTime(m.createdAt) : 'unknown'}`
     + ` · ${esc(m.fileCount ?? '?')} files · ${(m.sections ?? []).map(esc).join(', ')}`
     + (m.hasMasterKey ? '' : ' · <span style="color:var(--danger)">no master key</span>');
 }
@@ -1562,7 +1656,7 @@ $('bk-restore')?.addEventListener('click', async () => {
   } catch (err) { out.innerHTML = `<span style="color:var(--danger)">${esc(err.message)}</span>`; return; }
 
   if (!confirm(`Restore ${plan.restored.length} file(s) from a backup made `
-    + `${plan.manifest?.createdAt ? new Date(plan.manifest.createdAt).toLocaleString() : 'at an unknown time'}?\n\n`
+    + `${plan.manifest?.createdAt ? fmtDateTime(plan.manifest.createdAt) : 'at an unknown time'}?\n\n`
     + 'This replaces the settings, admin accounts and WhatsApp link on this machine. '
     + 'The current contents are copied aside first.\n\n'
     + 'The bot must be restarted afterwards.')) { out.textContent = ''; return; }
@@ -1621,7 +1715,7 @@ async function loadAdmins() {
               ${a.username !== CURRENT_USER.username ? `<button class="btn tiny danger" onclick="adminRemove(${js})">Remove</button>` : ''}
             </span>` : ''}
         </div>
-        <div class="item-sub">${a.lastLogin ? 'last login ' + new Date(a.lastLogin).toLocaleString() : 'never signed in'}
+        <div class="item-sub">${a.lastLogin ? 'last login ' + fmtDateTime(a.lastLogin) : 'never signed in'}
           · signed-in limit ${esc(fmtMins(a.sessionMinutes))}${a.sessionMinutesSet ? '' : ' <span class="muted">(default)</span>'}
         </div>
         ${isSuper ? `
@@ -1677,7 +1771,7 @@ window.adminToggle = async (username) => {
     el.innerHTML = `
       <div class="row gap wrap" style="justify-content:space-between;align-items:baseline">
         <span class="muted small">
-          ${r.summary.total} action${r.summary.total === 1 ? '' : 's'} on record${r.summary.lastAt ? ` · last ${new Date(r.summary.lastAt).toLocaleString()}` : ''}
+          ${r.summary.total} action${r.summary.total === 1 ? '' : 's'} on record${r.summary.lastAt ? ` · last ${fmtDateTime(r.summary.lastAt)}` : ''}
         </span>
         ${r.summary.total ? `<button class="btn tiny" onclick="event.stopPropagation();auditShowUser(${jsStr(username)})">Open in Logs →</button>` : ''}
       </div>
@@ -1688,7 +1782,7 @@ window.adminToggle = async (username) => {
         ? r.events.map((e) => `
             <div class="trail-row">
               <span>${esc((AUDIT_CAT_LABELS[e.category] ?? { icon: '•' }).icon)} ${esc(e.action)}</span>
-              <span class="trail-when">${new Date(e.ts).toLocaleString()}</span>
+              <span class="trail-when">${fmtDateTime(e.ts)}</span>
             </div>`).join('')
         : '<div class="empty">This admin has not done anything yet.</div>'}`;
   } catch (err) {
@@ -1748,7 +1842,7 @@ function auditRow(e) {
     <div class="item compact">
       <div class="item-top">
         <span class="item-title">${esc(e.user)} <span class="muted">${e.role === 'superadmin' ? '(super)' : ''}</span></span>
-        <span class="muted small">${new Date(e.ts).toLocaleString()}</span>
+        <span class="muted small">${fmtDateTime(e.ts)}</span>
       </div>
       <div class="item-sub"><span title="${esc(cat.label)}">${esc(cat.icon)}</span> ${esc(e.action)}${e.detail && e.detail !== e.action ? ` · ${esc(e.detail)}` : ''}</div>
     </div>`;
@@ -1905,16 +1999,20 @@ window.gaOpen = async (jid, name) => {
 function renderMembers(members) {
   window._gaMembers = members;
   const q = $('ga-member-filter').value.toLowerCase();
-  const shown = members.filter((m) => !q || (m.number || '').includes(q) || (m.id || '').toLowerCase().includes(q));
+  // Searching by number works whether or not the '+' was typed.
+  const qDigits = numberDigits(q);
+  const shown = members.filter((m) => !q
+    || (qDigits && (m.number || '').includes(qDigits))
+    || (m.id || '').toLowerCase().includes(q));
   const box = $('ga-members');
   // Is the group being managed the announcements group? If so, offer a
   // per-member tag mute so specific people opt out of being @-pinged.
   const announceJid = CONFIG?.announce?.group ?? '';
   const isAnnounceGroup = gaCurrent && gaCurrent === announceJid;
-  const muted = new Set((CONFIG?.announce?.noTag ?? []).map((x) => String(x).replace(/[^0-9]/g, '')));
+  const muted = new Set((CONFIG?.announce?.noTag ?? []).map(numberDigits));
 
   box.innerHTML = shown.map((m) => {
-    const label = m.number ? `+${m.number}` : `<span class="muted">${esc(m.id)}</span>`;
+    const label = m.number ? esc(fmtNumber(m.number)) : `<span class="muted">${esc(m.id)}</span>`;
     const badge = m.admin === 'superadmin' ? '<span class="tag done">owner</span>'
                 : m.admin === 'admin' ? '<span class="tag done">admin</span>' : '';
     const who = m.number || m.id;
@@ -1945,8 +2043,8 @@ window.gaTag = async (number, muted) => {
     const r = await api('POST', '/notify/no-tag', { number, muted });
     // keep the local config in sync so the toggle reflects immediately
     if (CONFIG?.announce) CONFIG.announce.noTag = r.noTag;
-    if ($('f-ann-notag')) $('f-ann-notag').value = (r.noTag ?? []).join('\n');
-    toast(muted ? `+${number} will no longer be tagged` : `+${number} will be tagged again`);
+    if ($('f-ann-notag')) $('f-ann-notag').value = (r.noTag ?? []).map(fmtNumber).filter(Boolean).join('\n');
+    toast(muted ? `${fmtNumber(number)} will no longer be tagged` : `${fmtNumber(number)} will be tagged again`);
     renderMembers(window._gaMembers || []);
   } catch (err) { toast(err.message, true); }
 };
@@ -1995,8 +2093,10 @@ $('ga-desc-save').addEventListener('click', async () => {
 });
 
 $('ga-add-btn').addEventListener('click', async () => {
-  const num = $('ga-add-num').value.replace(/[^0-9]/g, '');
-  if (!num) return;
+  const problem = numberProblem($('ga-add-num').value);
+  if (problem) { $('ga-add-note').innerHTML = `<span style="color:var(--danger)">${esc(problem)}</span>`; return; }
+  const num = numberDigits($('ga-add-num').value);
+  $('ga-add-num').value = fmtNumber(num);
   $('ga-add-note').textContent = 'adding…';
   try {
     const r = await api('POST', `/groups/${encodeURIComponent(gaCurrent)}/participants`, { action: 'add', numbers: [num] });
@@ -2019,13 +2119,13 @@ async function loadGroupActivity() {
     if (!evs.length) { box.innerHTML = '<div class="empty">No activity recorded yet.</div>'; return; }
     const verb = { add:'joined/added', remove:'left/removed', promote:'promoted to admin', demote:'demoted', 'join-request':'requested to join' };
     box.innerHTML = evs.map((e) => {
-      const tgt = (e.targets || []).map((t) => t.number ? `+${t.number}` : t.jid).filter(Boolean).join(', ');
-      const by = e.actorNumber ? ` · by +${e.actorNumber}` : '';
+      const tgt = (e.targets || []).map((t) => fmtNumber(t.number) || t.jid).filter(Boolean).join(', ');
+      const by = e.actorNumber ? ` · by ${fmtNumber(e.actorNumber)}` : '';
       return `
         <div class="item compact">
           <div class="item-top">
             <span class="item-title">${esc(verb[e.action] || e.action)}: ${esc(tgt || '?')}</span>
-            <span class="muted small">${new Date(e.ts).toLocaleString()}</span>
+            <span class="muted small">${fmtDateTime(e.ts)}</span>
           </div>
           <div class="item-sub">${esc(e.groupName)}${by}</div>
         </div>`;
@@ -2104,14 +2204,14 @@ const fmtWhen = (ts) => {
   if (!ts) return '—';
   const d = new Date(ts);
   const days = Math.floor((Date.now() - ts) / 86400000);
-  if (days === 0) return `today ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  if (days === 0) return `today ${fmtTime(d)}`;
   if (days === 1) return 'yesterday';
   if (days < 30) return `${days} days ago`;
-  return d.toLocaleDateString();
+  return fmtDate(d);
 };
 
 const memberLabel = (m) =>
-  m.name || (m.number ? `+${m.number}` : (m.id || '').split('@')[0]);
+  m.name || fmtNumber(m.number) || (m.id || '').split('@')[0];
 
 async function loadMembersRoster() {
   const box = $('mr-list');
@@ -2132,9 +2232,12 @@ function renderRoster() {
   const q = ($('mr-filter').value || '').toLowerCase().trim();
   const sort = $('mr-sort').value;
 
+  // A number matches however it was typed: with the '+', without it, or with
+  // the spaces and dashes somebody pasted in from their contacts.
+  const qDigits = numberDigits(q);
   let list = ROSTER.filter((m) => !q
     || memberLabel(m).toLowerCase().includes(q)
-    || (m.number || '').includes(q)
+    || (qDigits && (m.number || '').includes(qDigits))
     || (m.id || '').toLowerCase().includes(q)
     || m.groups.some((g) => g.subject.toLowerCase().includes(q)));
 
@@ -2156,7 +2259,7 @@ function renderRoster() {
       </div>
       <div class="item-sub">
         ${m.groupCount} group${m.groupCount === 1 ? '' : 's'}
-        ${m.number ? ` · +${esc(m.number)}` : ' · no phone number visible'}
+        ${m.number ? ` · ${esc(fmtNumber(m.number))}` : ' · no phone number visible'}
         ${m.lastSeen ? ` · last seen ${esc(fmtWhen(m.lastSeen))}` : ''}
       </div>
     </div>`).join('') : '<div class="empty">Nobody matches that search.</div>';
@@ -2185,7 +2288,7 @@ window.openMember = async (key) => {
     };
 
     const timeline = (d.timeline || []).length
-      ? d.timeline.map((t) => `<div class="item-sub">${esc(new Date(t.ts).toLocaleString())} — <b>${esc(t.action)}</b> in ${esc(t.groupName)}${t.by ? ` <span class="muted">by ${esc(t.by)}</span>` : ''}</div>`).join('')
+      ? d.timeline.map((t) => `<div class="item-sub">${esc(fmtDateTime(t.ts))} — <b>${esc(t.action)}</b> in ${esc(t.groupName)}${t.by ? ` <span class="muted">by ${esc(t.by)}</span>` : ''}</div>`).join('')
       : '<div class="item-sub muted">No join/leave events recorded — they were already in these groups before the bot started watching. WhatsApp doesn\'t expose historical join dates.</div>';
 
     box.innerHTML = `
@@ -2193,7 +2296,7 @@ window.openMember = async (key) => {
         <div class="row gap" style="justify-content:space-between;align-items:flex-start">
           <div>
             <h3 style="margin:0">${esc(memberLabel(d))}</h3>
-            <div class="muted small">${d.number ? `+${esc(d.number)}` : 'no phone number visible (LID-only)'}${d.banned ? ' · <span class="pill bad">banned</span>' : ''}${d.noTag ? ' · <span class="pill warn">never tagged</span>' : ''}</div>
+            <div class="muted small">${d.number ? esc(fmtNumber(d.number)) : 'no phone number visible (LID-only)'}${d.banned ? ' · <span class="pill bad">banned</span>' : ''}${d.noTag ? ' · <span class="pill warn">never tagged</span>' : ''}</div>
           </div>
           <button class="btn tiny" onclick="closeMember()">✕ close</button>
         </div>
@@ -2225,9 +2328,9 @@ window.openMember = async (key) => {
 window.closeMember = () => { $('mr-detail').classList.add('hidden'); $('mr-detail').innerHTML = ''; };
 window.useMemberNumber = (n) => {
   if (!n) return toast('This person has no visible phone number — WhatsApp only exposes their internal id.', true);
-  $('mx-num').value = n;
+  $('mx-num').value = fmtNumber(n);
   $('mx-num').scrollIntoView({ behavior: 'smooth', block: 'center' });
-  toast(`+${n} filled in below`);
+  toast(`${fmtNumber(n)} filled in below`);
 };
 
 $('mr-filter')?.addEventListener('input', () => { ROSTER_SHOWN = 100; renderRoster(); });
@@ -2335,7 +2438,8 @@ function runSearch(q) {
   }
   for (const m of (ROSTER || [])) {
     const name = memberLabel(m);
-    const sc = Math.max(scoreHit(name, q), (m.number || '').includes(q) ? 70 : 0);
+    const qDigits = numberDigits(q);
+    const sc = Math.max(scoreHit(name, q), qDigits && (m.number || '').includes(qDigits) ? 70 : 0);
     if (sc) extra.push({ kind: 'member', what: name, sub: `${m.groupCount} groups`, tab: 'members', tabLabel: labels.members, score: sc, mkey: m.key });
   }
 

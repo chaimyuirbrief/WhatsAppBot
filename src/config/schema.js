@@ -16,7 +16,7 @@ export const DEFAULT_CONFIG = {
   },
 
   whatsapp: {
-    phoneNumber: '',            // E.164 without '+', e.g. 15551234567
+    phoneNumber: '',            // stored as digits, country code first (shown as +17323523090)
     loginMethod: 'pairing',     // 'pairing' (code pushed to phone) | 'qr'
     autoReconnect: true,
     markOnline: false,          // keeping this false leaves your phone's presence alone
