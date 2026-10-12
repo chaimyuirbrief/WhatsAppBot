@@ -18,7 +18,7 @@ function serve(sessionUser) {
       admins: [{ username: 'alice', passwordHash: hashPassword('averylongpassword'), role: 'superadmin', createdAt: 1, lastLogin: 1 }],
       adminPasswordHash: '',
     },
-    whatsapp: {}, logging: {}, email: {}, announce: {}, moderation: {},
+    whatsapp: { pacing: { jitterMs: 2000 } }, logging: {}, email: {}, announce: {}, moderation: {},
     lockdown: {
       enabled: false, timezone: 'America/New_York', windows: [], paceMs: 5000, alwaysLocked: [],
       shabbos: {
@@ -98,8 +98,10 @@ console.log('=== GET /lockdown/zmanim ===');
   ok(!Number.isNaN(Date.parse(w.lockAt)) && !Number.isNaN(Date.parse(w.unlockAt)), 'with real instants');
   ok(w.start.location === 'Brooklyn' && w.end.location === 'Brooklyn', 'and both ends named');
   ok(typeof w.start.zmanLabel === 'string' && typeof w.end.zmanLabel === 'string', 'in words, not just keys');
-  ok(w.leadMinutes === 5,
-     `plus how many minutes early the walk starts — 40 groups at 5s each needs 5 (${w.leadMinutes})`);
+  // 40 groups at up to paceMs + jitterMs each: the budget is the worst case,
+  // not the average, or the walk runs past candle lighting.
+  ok(w.leadMinutes === 6,
+     `plus how many minutes early the walk starts — 40 groups at up to 7s each needs 6 (${w.leadMinutes})`);
   ok(Date.parse(w.lockAt) === Date.parse(w.start.at) - w.leadMinutes * 60000,
      'the lock time is the zman minus the lead, which is what the panel explains');
 

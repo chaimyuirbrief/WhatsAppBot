@@ -409,7 +409,12 @@ export function createApiRouter({ configStore, bot, queue, pluginManager, stateS
     // The group count is not config, but the head-start before candle lighting
     // is worked out from it. Without it the panel would promise a shorter
     // early start than the scheduler actually takes.
-    const cfg = { ...(configStore.get().lockdown ?? {}), groupCount: bot?.groups?.().length ?? 0 };
+    const live = configStore.get();
+    const cfg = {
+      ...(live.lockdown ?? {}),
+      groupCount: bot?.groups?.().length ?? 0,
+      jitterMs: live.whatsapp?.pacing?.jitterMs,
+    };
     const days = clampPage(req.query.days, 28, 120);
     try {
       res.json({ options: zmanOptions(), upcoming: upcomingShabbosWindows(new Date(), cfg, days) });

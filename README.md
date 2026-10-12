@@ -380,7 +380,10 @@ or type your own:
 
 A blank or nonsense coordinate is **refused with a reason**, never quietly read
 as 0 — a bot silently following the zmanim of a spot in the Atlantic would lock
-at the wrong minute all year. **"Check the times here"** computes that
+at the wrong minute all year. If the place an end of the lock points at becomes
+unusable, the schedule **stops and says so** rather than falling back to another
+location you happen to have entered: clearing one digit of Jerusalem's latitude
+must not silently move the whole lock to Brooklyn. **"Check the times here"** computes that
 location's zmanim for the coming Friday so you can hold them against your own
 luach before trusting them with the groups.
 
@@ -435,9 +438,22 @@ therefore opens early enough for the **last** group to be shut by the zman
 itself.
 
 Left as `null`, `leadMinutes` is worked out from how many groups you have and
-the configured pace (60 groups at 5s each ⇒ 6 minutes). Set a number to
-override it. Note that `0` means "start exactly at the zman", which finishes
-late; blank is not the same as zero.
+the **worst-case** gap between two of them — `lockdown.paceMs` *plus* the
+`whatsapp.pacing.jitterMs` of deliberate randomness the pacer adds to every
+call, so 60 groups at up to 7s each is 8 minutes. Budgeting the average
+instead is how a 300-group account ends up with its last forty groups still
+open four minutes into Shabbos. Over-budgeting costs nothing: the groups are
+simply shut a few minutes early.
+
+Set a number to override it. Note that `0` means "start exactly at the zman",
+which finishes late; blank is not the same as zero.
+
+The window keeps **one identity for the whole stretch**, named after the first
+day it covers (`shabbos:2026-1-17`) rather than the instant the walk begins.
+That matters because the head start moves whenever a group joins or leaves, or
+the bot restarts before its first group fetch lands: if the identity moved with
+it, a manual unlock would stop applying and the groups would be re-locked in
+the middle of Shabbos.
 
 The unlock is not given a head start, so the groups reopen a few minutes
 *after* Havdalah rather than before it.
@@ -735,9 +751,12 @@ than the person you meant.
 AM/PM anywhere, including in the schedule boxes: the window start is a plain
 `HH:MM` text field rather than the browser's native time picker, because that
 widget renders a 12-hour clock wherever the reader's locale says so. `9`,
-`930` and `9.00` are all understood and tidied to `09:00`; `7pm` is refused
-rather than guessed at, because read as 07:00 it would unlock the groups
-twelve hours early.
+`930` and `9.00` are all understood and tidied to `09:00`; `7pm` **refuses the
+save**, naming what it could not read, rather than being guessed at or quietly
+replaced with a default — read as 07:00 it would unlock the groups twelve hours
+early, and silently defaulted it would do the same while reporting itself
+saved. A window whose start a hand-edited `config.json` leaves unreadable is
+skipped with a warning in the log, never run at some other hour.
 
 Dates are written year-first (`2026-01-16`) so they mean the same thing to a
 reader anywhere, and a time that belongs to a place is labelled with that

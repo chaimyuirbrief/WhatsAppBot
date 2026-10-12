@@ -179,20 +179,44 @@ export function usableLocations(list) {
 }
 
 /**
- * The location an end of the schedule points at. A missing or unknown id
- * falls back to the only location there is - the overwhelmingly common setup
- * is one place used for both ends, and making that work without an explicit
- * pick removes the commonest way to misconfigure this.
+ * The location an end of the schedule points at.
+ *
+ * A missing id falls back to the only location there is - the overwhelmingly
+ * common setup is one place used for both ends, and making that work without
+ * an explicit pick removes the commonest way to misconfigure this.
+ *
+ * But an id that NAMES A ROW WHICH IS PRESENT AND BROKEN resolves to nothing,
+ * never to some other city. Clearing one digit of Jerusalem's latitude would
+ * otherwise silently move the whole Shabbos lock to Brooklyn - a seven-hour
+ * error in when every group shuts, with the panel still reading "Jerusalem".
+ * Returning null stops the schedule and `shabbosStatus` says why, which is
+ * the only honest outcome.
  */
 export function pickLocation(locations, id) {
   const list = usableLocations(locations);
-  if (!list.length) return null;
   const wanted = String(id ?? '').trim();
+
   if (wanted) {
     const hit = list.find((l) => l.id === wanted);
     if (hit) return hit;
+    // The row is there but unusable: refuse rather than substitute.
+    const broken = (Array.isArray(locations) ? locations : [])
+      .some((raw) => String(raw?.id ?? '').trim() === wanted);
+    if (broken) return null;
   }
+  // Either nothing was asked for, or the row it named is gone entirely.
   return list.length === 1 ? list[0] : null;
+}
+
+/** The locations that are present but unusable, with the reason for each. */
+export function brokenLocations(locations) {
+  return (Array.isArray(locations) ? locations : [])
+    .map((raw, i) => ({
+      id: String(raw?.id ?? '').trim(),
+      name: String(raw?.name ?? '').trim() || `location ${i + 1}`,
+      problem: locationError(raw),
+    }))
+    .filter((l) => l.problem);
 }
 
 /* ------------------------- the calculations ------------------------- */

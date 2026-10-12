@@ -26,6 +26,33 @@ ok(isWithin(mid, lockWindow(mid, cfg)), 'Friday evening is inside the window');
 ok(lockWindow(new Date(), { timezone: 'UTC', windows: [] }) === null, 'no windows configured -> null');
 ok(lockWindow(new Date(), { timezone: 'UTC', windows: [{ day: 1, start: '09:00', durationMinutes: 60, enabled: false }] }) === null, 'a disabled window is ignored');
 
+console.log('=== a start time the bot cannot read is skipped, never defaulted ===');
+{
+  // The portal refuses to save one, so reaching here means a hand-edited
+  // config. Defaulting it to some other hour would lock every group at a time
+  // nobody chose; `zonedToUtc('6pm')` would give a window at no instant at all.
+  for (const bad of ['6pm', '6:00 PM', 'noon', '', '25:00', '18:70', 'abc', null, true, {}]) {
+    const cfg = { enabled: true, timezone: 'UTC', windows: [{ id: 'b', day: 1, start: bad, durationMinutes: 60 }] };
+    ok(lockWindow(new Date('2026-01-14T12:00:00Z'), cfg) === null,
+       `start ${JSON.stringify(bad)} produces no window at all`);
+  }
+  // A good window alongside a bad one still runs: one typo must not take the
+  // whole schedule down.
+  const mixed = { enabled: true, timezone: 'UTC', windows: [
+    { id: 'bad', day: 1, start: '6pm', durationMinutes: 60 },
+    { id: 'good', label: 'Monday', day: 1, start: '18:00', durationMinutes: 60 },
+  ] };
+  const w = lockWindow(new Date('2026-01-14T12:00:00Z'), mixed);
+  ok(w?.label === 'Monday', 'the readable window still runs beside the unreadable one');
+  ok(w.lockAt.toISOString().endsWith('T18:00:00.000Z'), `at the hour it says (${w.lockAt.toISOString()})`);
+  // Forgiving where there is nothing to guess at.
+  for (const [typed, want] of [['9', '09:00'], ['930', '09:30'], ['18.30', '18:30'], ['9:5', '09:05'], [18, '18:00']]) {
+    const cfg = { enabled: true, timezone: 'UTC', windows: [{ day: 1, start: typed, durationMinutes: 60 }] };
+    const got = lockWindow(new Date('2026-01-14T12:00:00Z'), cfg);
+    ok(got && got.lockAt.toISOString().slice(11, 16) === want, `start ${JSON.stringify(typed)} is read as ${want}`);
+  }
+}
+
 console.log('=== DST is handled in civil time, not by adding hours ===');
 {
   // The clock jumps 02:00 -> 03:00 on 2026-03-08 in New York, so 02:30 never

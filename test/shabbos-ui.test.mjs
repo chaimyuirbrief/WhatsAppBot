@@ -1,7 +1,7 @@
-/* The Shabbos-lock panel, run against the real markup: what is loaded into the
-   form must come back out of it unchanged. A mistyped class name here loses an
-   admin's settings silently, which is the one failure nobody would notice
-   until the groups stayed open.
+/* The lockdown card, run against the real markup: what is loaded into the
+   form must come back out of it unchanged, and a time the bot cannot read
+   must stop the save rather than being quietly replaced. Both are failures
+   nobody would notice until the groups locked at the wrong hour.
    Run: node test/shabbos-ui.test.mjs */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -39,16 +39,25 @@ function mount() {
   // real ones rather than a stand-in.
   const fmtSrc = appJs.match(/\/\* -+ numbers and times -+ \*\/[\s\S]*?\n\/\* -+ toast/)[0]
     .replace(/\n\/\* -+ toast$/, '');
+  // The weekly-window half of the same card: normalizeWindow, the clock-box
+  // guard, and the collector that feeds both save buttons.
+  const winBlock = appJs.match(/\/\* -+ lockdown windows -+ \*\/[\s\S]*?\n\/\* -+ automatic Shabbos/)[0]
+    .replace(/\n\/\* -+ automatic Shabbos$/, '');
   const src = block[0].replace(/\nfunction collectForm\($/, '');
   const make = new Function('document', 'window', 'api', `
     "use strict";
     const $ = (id) => document.getElementById(id);
+    let LOCK_WINDOWS = [];                 // declared above the block in app.js
+    const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
     ${escSrc}
     ${fmtSrc}
+    ${winBlock}
     ${src}
     return {
       fillShabbosForm, collectShabbos, collectShLocations, renderShLocations,
       renderShPickers, numOrBlank, fmtTime, fmtDayTime, lockZone, shortZone, SH_PRESETS,
+      normalizeWindow, collectLockWindows, badClockBoxes, clockRefusal, renderLockWindows,
+      setWindows: (w) => { LOCK_WINDOWS = w; },
       setZmanOptions: (o) => { ZMAN_OPTIONS = o; },
       $,
     };
@@ -168,6 +177,50 @@ console.log('=== the zman pickers ===');
   const endOpts = [...ui.$('f-sh-end-zman').querySelectorAll('option')].map((o) => o.value);
   ok(endOpts[0] === 'sunset' || endOpts.includes('tzais8.5'), 'the unlock picker leads with the tzais options');
   ok(endOpts.includes('candleLighting'), 'while still offering the rest');
+}
+
+console.log('=== a start time the bot cannot read stops the save ===');
+{
+  const { ui, document } = mount();
+  // An existing window, retyped as "6pm" - the single most likely mistake
+  // now that the box takes free text.
+  ui.setWindows([ui.normalizeWindow({ id: 'w1', label: 'Shabbos', day: 5, start: '18:00', durationMinutes: 1500 })]);
+  ui.renderLockWindows();
+  const box = document.querySelector('#lock-windows .w-start');
+  ok(box && box.value === '18:00', 'the saved window is drawn');
+
+  box.value = '6pm';
+  const bad = ui.badClockBoxes();
+  ok(bad.length === 1 && bad[0] === '6pm', `the unreadable box is found (${JSON.stringify(bad)})`);
+  ok(/6pm/.test(ui.clockRefusal(bad)) && /18:00/.test(ui.clockRefusal(bad)),
+     `and the refusal says what is wrong and what to type instead ("${ui.clockRefusal(bad)}")`);
+
+  // THE POINT: it must NOT silently become 09:00 and report itself saved.
+  // 18:00 for 1500 minutes is the Shabbos lock; 09:00 would open the groups
+  // for the whole of Friday night.
+  const collected = ui.collectLockWindows();
+  ok(collected[0].start === '6pm',
+     `what was typed is kept, not rewritten to 09:00 (${JSON.stringify(collected[0].start)})`);
+  ok(collected[0].durationMinutes === 1500, 'and the rest of the row is untouched');
+
+  // Every value the format rules refuse must be caught here too, rather than
+  // landing on some other hour.
+  for (const typo of ['7pm', '7 PM', '7:30pm', '12am', '7 a.m.', '24:00', '7:60', 'noon', '']) {
+    box.value = typo;
+    ok(ui.badClockBoxes().length === 1, `${JSON.stringify(typo)} stops the save`);
+    ok(ui.collectLockWindows()[0].start !== '09:00', `  ...and is not turned into 09:00`);
+  }
+
+  // A readable time clears the flag and collects canonically.
+  for (const [typed, want] of [['18:00', '18:00'], ['6:30', '06:30'], ['930', '09:30'], ['18', '18:00']]) {
+    box.value = typed;
+    ok(ui.badClockBoxes().length === 0, `${JSON.stringify(typed)} is accepted`);
+    ok(ui.collectLockWindows()[0].start === want, `  ...and collects as ${want}`);
+  }
+
+  // A brand-new row, with nothing typed in it at all, still gets a sane start.
+  ok(ui.normalizeWindow({}).start === '09:00', 'a new window starts at 09:00');
+  ok(ui.badClockBoxes().length === 0, 'and an empty card has nothing to complain about');
 }
 
 console.log('=== the known-places list ===');

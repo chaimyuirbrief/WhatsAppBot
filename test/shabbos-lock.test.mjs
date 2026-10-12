@@ -69,26 +69,42 @@ console.log('=== the walk starts early enough to FINISH by candle lighting ===')
   ok(clock(w10.zmanim.start.at, 'America/New_York') === 'Fri 16:36', 'candle lighting itself is still reported unshifted');
   ok(w10.zmanim.leadMs === 10 * 60000, 'the lead is reported so the portal can explain the early start');
 
-  // Left unset it is worked out from how many groups there are.
-  ok(shabbosLeadMs({ paceMs: 5000, groupCount: 60, shabbos: {} }) === 6 * 60000,
-     '60 groups at 5s each needs 6 minutes (5 minutes of walking plus slack)');
-  ok(shabbosLeadMs({ paceMs: 5000, groupCount: 200, shabbos: {} }) === 18 * 60000, '200 groups needs 18');
-  ok(shabbosLeadMs({ paceMs: 5000, groupCount: 0, shabbos: {} }) === 60000, 'with no groups it is still a minute, not zero');
-  ok(shabbosLeadMs({ groupCount: 60, shabbos: {} }) === 6 * 60000, 'a missing pace falls back to the documented 5s');
-  ok(shabbosLeadMs({}) === 60000, 'and an empty config does not throw');
+  // Left unset it is worked out from how many groups there are. The gap
+  // between two groups is NOT paceMs: the pacer adds up to jitterMs of
+  // deliberate randomness to every one of them, so the budget has to assume
+  // the worst case or the walk runs past candle lighting.
+  const lead = (groups, extra = {}) => shabbosLeadMs({ paceMs: 5000, jitterMs: 2000, groupCount: groups, shabbos: {}, ...extra });
+  ok(lead(60) === 8 * 60000, '60 groups at up to 7s each needs 8 minutes (7 minutes of walking plus slack)');
+  ok(lead(200) === 25 * 60000, '200 groups needs 25');
+  ok(lead(0) === 60000, 'with no groups it is still a minute, not zero');
 
-  const auto = lockWindow(WEDNESDAY, cfgFor({ leadMinutes: null }, { groupCount: 60 }));
-  ok(auto.lockAt.getTime() === w0.lockAt.getTime() - 6 * 60000, 'the automatic lead is applied to the window');
-  ok(clock(auto.lockAt, 'America/New_York') === 'Fri 16:30', `so 60 groups start locking at 16:30 (${clock(auto.lockAt, 'America/New_York')})`);
+  // THE POINT: the budget must cover the SLOWEST the walk can legitimately
+  // run, not the average. Budgeting paceMs alone is how a large account ends
+  // up with its last groups still open minutes into Shabbos.
+  for (const groups of [10, 60, 150, 300, 800]) {
+    const worstCaseWalk = groups * (5000 + 2000);
+    ok(lead(groups) >= worstCaseWalk,
+       `${groups} groups: the head start (${lead(groups) / 60000} min) covers the worst-case walk (${Math.ceil(worstCaseWalk / 60000)} min)`);
+  }
+  ok(lead(150, { jitterMs: 0 }) < lead(150),
+     'turning the jitter off genuinely shortens the budget, so it is the jitter being accounted for and not a fudge factor');
+  ok(shabbosLeadMs({ paceMs: 5000, groupCount: 60, shabbos: {} }) === 8 * 60000,
+     'a missing jitter falls back to the documented 2s rather than to none');
+  ok(shabbosLeadMs({ jitterMs: 2000, groupCount: 60, shabbos: {} }) === 8 * 60000,
+     'and a missing pace to the documented 5s');
+  ok(shabbosLeadMs({}) === 60000, 'an empty config does not throw');
+
+  const auto = lockWindow(WEDNESDAY, cfgFor({ leadMinutes: null }, { groupCount: 60, jitterMs: 2000 }));
+  ok(auto.lockAt.getTime() === w0.lockAt.getTime() - 8 * 60000, 'the automatic lead is applied to the window');
+  ok(clock(auto.lockAt, 'America/New_York') === 'Fri 16:28', `so 60 groups start locking at 16:28 (${clock(auto.lockAt, 'America/New_York')})`);
 
   // A lead of 0 must be the admin's explicit choice, never the result of a
   // blank field or a bad value coercing to zero.
   for (const blank of [null, undefined, '', false, [], 'abc', NaN, -5]) {
-    const got = shabbosLeadMs({ paceMs: 5000, groupCount: 60, shabbos: { leadMinutes: blank } });
-    ok(got === 6 * 60000, `leadMinutes ${JSON.stringify(blank)} means "work it out", not zero`);
+    ok(lead(60, { shabbos: { leadMinutes: blank } }) === 8 * 60000,
+       `leadMinutes ${JSON.stringify(blank)} means "work it out", not zero`);
   }
-  ok(shabbosLeadMs({ paceMs: 5000, groupCount: 60, shabbos: { leadMinutes: 0 } }) === 0,
-     'but a deliberate 0 is honoured');
+  ok(lead(60, { shabbos: { leadMinutes: 0 } }) === 0, 'but a deliberate 0 is honoured');
 }
 
 console.log('=== lock on one city, unlock on another ===');
@@ -176,6 +192,59 @@ console.log('=== yom tov running into Shabbos is ONE lock ===');
   const noYT = lockWindow(erev, cfgFor({ includeYomTov: false }));
   ok(noYT.label === 'Shabbos', 'with Yom Tov off, the next lock is the Shabbos');
   ok(clock(noYT.lockAt, 'America/New_York') === 'Fri 19:04', `starting Friday afternoon (${clock(noYT.lockAt, 'America/New_York')})`);
+}
+
+console.log('=== the window keeps ONE identity however the head start moves ===');
+{
+  // The head start is derived from the live group count, so lockAt moves
+  // whenever a group is added, the process restarts before the first group
+  // fetch lands, or an admin edits the pace. If the window's identity came
+  // from lockAt, every one of those would mint a "new" window - and a new
+  // window means the scheduler stops honouring an admin's manual unlock and
+  // re-locks the groups in the middle of Shabbos.
+  const at = (extra) => lockWindow(WEDNESDAY, cfgFor({ leadMinutes: null }, extra));
+  const base = at({ groupCount: 60, jitterMs: 2000 });
+
+  const moved = [
+    ['no groups cached yet, as just after a restart', { groupCount: 0, jitterMs: 2000 }],
+    ['one group joined', { groupCount: 61, jitterMs: 2000 }],
+    ['one group left', { groupCount: 59, jitterMs: 2000 }],
+    ['a much larger account', { groupCount: 400, jitterMs: 2000 }],
+    ['the admin widened the pace', { groupCount: 60, jitterMs: 2000, paceMs: 9000 }],
+    ['the admin changed the jitter', { groupCount: 60, jitterMs: 0 }],
+  ];
+  for (const [what, extra] of moved) {
+    const w = at(extra);
+    ok(w.key === base.key, `${what}: the key is unchanged (${w.key})`);
+    ok(w.unlockAt.getTime() === base.unlockAt.getTime(), `${what}: and the unlock is untouched`);
+  }
+  // ...and the test is not vacuous: the lock time really does move underneath
+  // that unchanged key.
+  const lockTimes = new Set(moved.map(([, extra]) => at(extra).lockAt.getTime()));
+  ok(lockTimes.size > 1, `the lock time itself takes ${lockTimes.size} different values across those changes`);
+  ok(base.key === 'shabbos:2026-1-17', `the key names the stretch, not an instant (${base.key})`);
+
+  // What that buys: the admin's unlock keeps applying for the whole stretch.
+  const inside = new Date('2026-01-17T18:00:00Z');   // Saturday 13:00 New York
+  const state = { locked: false, source: 'manual', overriddenWindowKey: base.key };
+  for (const [what, extra] of moved) {
+    const cfg = cfgFor({ leadMinutes: null }, extra);
+    ok(decide(inside, cfg, state) === null,
+       `${what}: an admin who unlocked by hand is NOT re-locked mid-Shabbos`);
+  }
+  // And an override from some other window still does not apply to this one.
+  ok(decide(inside, cfgFor({ leadMinutes: null }, { groupCount: 60, jitterMs: 2000 }),
+            { locked: false, overriddenWindowKey: 'shabbos:2026-1-10' }) === 'lock',
+     'while last week\'s override does not hold this week open');
+
+  // A weekly window keeps the identity it has always had, so an override
+  // stored by an older version still matches after upgrading.
+  const weekly = lockWindow(WEDNESDAY, cfgFor({ enabled: false }, {
+    enabled: true,
+    windows: [{ id: 'w', label: 'Quiet hours', day: 5, start: '18:00', durationMinutes: 240 }],
+  }));
+  ok(weekly.key === weekly.lockAt.toISOString(),
+     'a weekly window is still keyed on its lock instant, which config alone decides');
 }
 
 console.log('=== two switches, neither of which is a trap ===');
@@ -272,6 +341,67 @@ console.log('=== half-configured does nothing, and says why ===');
   ok(shabbosStatus(off).enabled === false, 'and reports itself off');
 }
 
+console.log('=== a broken location stops the lock rather than moving it ===');
+{
+  // Clearing one digit of a latitude must not silently read the zmanim
+  // somewhere else. Nothing is scheduled, and the panel says exactly why.
+  const BROKEN_JM = { ...JERUSALEM, latitude: '' };
+  const cfg = cfgFor({
+    locations: [BROOKLYN, BROKEN_JM],
+    start: { locationId: 'jm', zman: 'candleLighting', offsetMinutes: 0 },
+    end: { locationId: 'jm', zman: 'tzais8.5', offsetMinutes: 0 },
+  });
+  ok(lockWindow(WEDNESDAY, cfg) === null, 'nothing is scheduled while the chosen place is unusable');
+  ok(decide(FRI_EVENING, cfg, { locked: false }) === null, 'so nothing is locked at the wrong hour');
+
+  const probs = shabbosStatus(cfg).problems;
+  ok(probs.some((p) => /Jerusalem/.test(p) && /Latitude/i.test(p)),
+     `the panel names the place and the reason ("${probs.find((p) => /Jerusalem/.test(p))}")`);
+  ok(probs.some((p) => /NOT quietly read somewhere else/.test(p)),
+     'and says out loud that it is not being read somewhere else instead');
+
+  // Compare: the same config with Jerusalem intact really would lock at a
+  // very different time, which is the error this prevents.
+  const good = cfgFor({
+    locations: [BROOKLYN, JERUSALEM],
+    start: { locationId: 'jm', zman: 'candleLighting', offsetMinutes: 0 },
+    end: { locationId: 'jm', zman: 'tzais8.5', offsetMinutes: 0 },
+  });
+  const bkOnly = cfgFor();
+  const hours = Math.abs(lockWindow(WEDNESDAY, good).lockAt - lockWindow(WEDNESDAY, bkOnly).lockAt) / 3600000;
+  ok(hours > 6, `falling back to the other city would have been a ${hours.toFixed(1)}-hour error`);
+}
+
+console.log('=== the preview shows the stretch the bot will actually run ===');
+{
+  // A stretch that begins near the far edge of the preview window used to be
+  // emitted with its last day cut off, so the panel showed Pesach reopening
+  // on Thursday night when the scheduler will hold it to Saturday.
+  for (const today of ['2026-03-05', '2026-03-06', '2026-03-11']) {
+    const now = new Date(`${today}T12:00:00Z`);
+    const listed = upcomingShabbosWindows(now, cfgFor(), 28);
+    const pesach = listed.find((w) => w.label.includes('Pesach'));
+    ok(!!pesach, `${today}: Pesach is listed`);
+    if (!pesach) continue;
+    // What the scheduler itself will do for that same lock.
+    const real = lockWindow(new Date(pesach.lockAt.getTime() + 60000), cfgFor());
+    ok(pesach.unlockAt.getTime() === real.unlockAt.getTime(),
+       `${today}: the previewed reopen matches the scheduler's (${clock(pesach.unlockAt, 'America/New_York')})`);
+    ok(pesach.label === real.label, `${today}: and so does the label ("${pesach.label}")`);
+  }
+
+  // Every entry in a preview must agree with the scheduler, at any span.
+  for (const span of [7, 14, 28, 60]) {
+    const listed = upcomingShabbosWindows(WEDNESDAY, cfgFor(), span);
+    const wrong = listed.filter((w) => {
+      const real = lockWindow(new Date(w.lockAt.getTime() + 60000), cfgFor());
+      return !real || real.unlockAt.getTime() !== w.unlockAt.getTime();
+    });
+    ok(wrong.length === 0,
+       `a ${span}-day preview lists ${listed.length} locks and every reopen matches the scheduler${wrong.length ? ` — ${wrong.map((w) => w.label).join(', ')}` : ''}`);
+  }
+}
+
 console.log('=== what the portal is told ===');
 {
   const cfg = cfgFor({ locations: [BROOKLYN, JERUSALEM], end: { locationId: 'jm', zman: 'tzais72', offsetMinutes: 5 } }, { groupCount: 40 });
@@ -281,7 +411,8 @@ console.log('=== what the portal is told ===');
   ok(st.end.location === 'Jerusalem' && st.end.offsetMinutes === 5, 'so is the other end, with its offset');
   ok(st.start.candleOffsetMinutes === 18 && st.end.candleOffsetMinutes === 40, "each place's own candle-lighting custom is reported");
   ok(st.leadMinutes === 0, 'an explicit lead of 0 is reported as 0');
-  ok(shabbosStatus(cfgFor({ leadMinutes: null }, { groupCount: 40 })).leadMinutes === 5, 'an automatic lead is reported as the minutes it works out to');
+  ok(shabbosStatus(cfgFor({ leadMinutes: null }, { groupCount: 40, jitterMs: 2000 })).leadMinutes === 6,
+     'an automatic lead is reported as the minutes it works out to');
   ok(st.lockBy instanceof Date && st.reopenAt instanceof Date, 'and the two minutes it is aiming at');
   ok(st.locationCount === 2, 'the number of usable locations is reported');
 

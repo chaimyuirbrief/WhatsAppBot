@@ -10,7 +10,7 @@
 import {
   ZMANIM, ZMAN_BY_KEY, zmanOptions, zmanLabel, zmanAt, previewZmanim,
   assurBemelachaRuns, normalizeLocation, locationError, usableLocations, pickLocation,
-  civilPlusDays, clearZmanimCache, DEFAULT_CANDLE_OFFSET_MINUTES,
+  civilPlusDays, clearZmanimCache, brokenLocations, DEFAULT_CANDLE_OFFSET_MINUTES,
 } from '../src/core/zmanim.js';
 
 let pass = 0, fail = 0;
@@ -188,6 +188,29 @@ console.log('=== which location each end of the lock is read from ===');
   ok(pickLocation([BROOKLYN, JERUSALEM], '') === null, 'with several and no pick, nothing is guessed');
   ok(pickLocation([BROOKLYN, JERUSALEM], 'nope') === null, 'nor for an id that is not there');
   ok(pickLocation([], 'bk') === null, 'no locations, no answer');
+
+  // THE DANGEROUS ONE: an id that names a row which is PRESENT but broken.
+  // Falling back to the only usable location would move the whole Shabbos
+  // lock to another city while the panel still read the chosen one - a
+  // seven-hour error in when every group shuts.
+  const JM_BROKEN = { ...JERUSALEM, latitude: '' };
+  ok(pickLocation([BROOKLYN, JM_BROKEN], 'jm') === null,
+     'a broken row resolves to nothing, NOT to the other city');
+  ok(pickLocation([JM_BROKEN], 'jm') === null, 'even when it is the only other one');
+  ok(pickLocation([BROOKLYN, JM_BROKEN], 'bk')?.id === 'bk', 'while the usable row still resolves');
+  ok(pickLocation([BROOKLYN], 'jm')?.id === 'bk',
+     'but an id naming a row that was deleted outright still falls back, as before');
+}
+
+console.log('=== a location that cannot be used is named, with its reason ===');
+{
+  ok(brokenLocations([BROOKLYN, JERUSALEM]).length === 0, 'nothing to say about two good ones');
+  const broken = brokenLocations([BROOKLYN, { ...JERUSALEM, latitude: '' }, { name: '', timezone: '' }]);
+  ok(broken.length === 2, 'both unusable rows are reported');
+  ok(broken[0].name === 'Jerusalem' && /Latitude/i.test(broken[0].problem),
+     `named, with the reason (${broken[0].name}: ${broken[0].problem})`);
+  ok(broken[1].name === 'location 3', 'a row with no name is identified by its position');
+  ok(brokenLocations(null).length === 0 && brokenLocations('x').length === 0, 'and a missing list says nothing');
 }
 
 console.log('=== the calendar: which days are locked, as one stretch each ===');

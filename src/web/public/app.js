@@ -61,6 +61,22 @@ let SETUP_MODE = false;
 const MIN_NUMBER_DIGITS = 7;
 const MAX_NUMBER_DIGITS = 15;
 
+/**
+ * The digits of a SEARCH query, but only when the query is plausibly a phone
+ * number: all digits once the punctuation people paste in is removed, and at
+ * least three of them. Otherwise ''.
+ *
+ * Without this, searching the roster for a group called "Shiur 2" reduces to
+ * the digit "2" and matches every member whose number contains a 2, which is
+ * most of them - the group-name match is buried under the whole roster.
+ */
+function searchDigits(query) {
+  const raw = String(query ?? '').trim();
+  if (!raw || /[^0-9+\-().\s]/.test(raw)) return '';
+  const d = numberDigits(raw);
+  return d.length >= 3 ? d : '';
+}
+
 /** Digits only, country code first. Lenient: it has to recognise the same
     person however they were typed in. */
 function numberDigits(value) {
@@ -451,15 +467,48 @@ window.normalizeClockBox = (el) => {
 };
 
 function normalizeWindow(w) {
+  // An unreadable start time is KEPT AS TYPED, not quietly replaced. Defaulting
+  // it to 09:00 would turn "6pm" into a lock nine hours early and report it as
+  // saved; `badClockBoxes()` stops the save instead, and the box still shows
+  // what was typed so it can be corrected. Only a genuinely new row, with
+  // nothing in the box at all, gets the 09:00 starting point.
+  const typed = typeof w?.start === 'string' ? w.start.trim() : '';
+  // Only a BRAND-NEW row - one with no start key at all - gets the 09:00
+  // starting point. A box somebody emptied is left empty and flagged, because
+  // "" and "I meant nine in the morning" are not the same statement.
+  const isNew = w?.start === undefined || w?.start === null;
   return {
     id: w?.id || `w${Math.random().toString(36).slice(2, 8)}`,
     label: w?.label ?? '',
     day: Number.isFinite(+w?.day) ? +w.day : 0,
-    start: parseClock(w?.start) || '09:00',
+    start: parseClock(typed) || (isNew ? '09:00' : typed),
     durationMinutes: +w?.durationMinutes > 0 ? +w.durationMinutes : 60,
     enabled: w?.enabled !== false,
   };
 }
+
+/**
+ * The windows whose start time cannot be read as 24-hour HH:MM, flagged in
+ * place. Both save paths check this: a time the bot cannot read must never
+ * reach the config, because every outcome of guessing at it - defaulting,
+ * rounding, dropping the window - locks the groups at an hour nobody chose.
+ */
+function badClockBoxes() {
+  const bad = [];
+  for (const row of document.querySelectorAll('#lock-windows .win-row')) {
+    const box = row.querySelector('.w-start');
+    const okNow = !!parseClock(box.value);
+    box.classList.toggle('bad-input', !okNow);
+    if (!okNow) bad.push(box.value.trim() || '(empty)');
+  }
+  return bad;
+}
+
+/** The message to show when a save is refused for an unreadable time. */
+const clockRefusal = (bad) =>
+  `Not saved — ${bad.length === 1 ? 'a lockdown window has' : `${bad.length} lockdown windows have`}`
+  + ` a start time the bot cannot read: ${bad.join(', ')}.`
+  + ' Use 24-hour HH:MM, e.g. 18:00 for 6pm.';
 
 function renderLockWindows() {
   const box = $('lock-windows');
@@ -713,7 +762,14 @@ function collectShabbos() {
     leadMinutes: lead === '' ? null : Math.max(0, Math.round(numOrBlank(lead) || 0)),
   };
   // Same guard as the group pickers: never blank a list the page never drew.
-  if (SH_DRAWN) out.locations = collectShLocations().filter((l) => l.name || l.timezone);
+  // A half-filled row is KEPT: dropping it would throw away the coordinates
+  // somebody typed while one of the ends still points at its id, and the
+  // panel would show nothing wrong. Only a row with nothing in it at all goes.
+  if (SH_DRAWN) {
+    out.locations = collectShLocations()
+      .filter((l) => l.name || l.timezone || l.latitude !== '' || l.longitude !== ''
+        || l.id === out.start.locationId || l.id === out.end.locationId);
+  }
   return out;
 }
 
@@ -855,6 +911,15 @@ function collectForm() {
 
 $('btn-save').addEventListener('click', async () => {
   try {
+    // This button also serialises the lockdown card, which lives on another
+    // tab - so an unreadable window start has to stop it here too, loudly,
+    // rather than being written away where nobody is looking.
+    const badClocks = badClockBoxes();
+    if (badClocks.length) {
+      $('save-note').innerHTML = `<span style="color:var(--danger)">${esc(clockRefusal(badClocks))}</span>`;
+      toast(clockRefusal(badClocks), true);
+      return;
+    }
     const form = collectForm();
     // The server refuses to blank a working group list, because a form saved
     // while the list was unavailable would otherwise wipe it. If the boxes
@@ -1432,6 +1497,11 @@ $('unlock-now')?.addEventListener('click', async () => {
   catch (err) { toast(err.message, true); }
 });
 $('lock-save')?.addEventListener('click', async () => {
+  const bad = badClockBoxes();
+  if (bad.length) {
+    $('lock-save-note').innerHTML = `<span style="color:var(--danger)">${esc(clockRefusal(bad))}</span>`;
+    return;
+  }
   $('lock-save-note').textContent = 'saving…';
   try {
     CONFIG = await api('PUT', '/config', { lockdown: collectLockdown() });
@@ -1999,8 +2069,10 @@ window.gaOpen = async (jid, name) => {
 function renderMembers(members) {
   window._gaMembers = members;
   const q = $('ga-member-filter').value.toLowerCase();
-  // Searching by number works whether or not the '+' was typed.
-  const qDigits = numberDigits(q);
+  // Searching by number works whether or not the '+' was typed - but only
+  // when the query is actually a number, not a name that happens to have a
+  // digit in it.
+  const qDigits = searchDigits(q);
   const shown = members.filter((m) => !q
     || (qDigits && (m.number || '').includes(qDigits))
     || (m.id || '').toLowerCase().includes(q));
@@ -2233,8 +2305,9 @@ function renderRoster() {
   const sort = $('mr-sort').value;
 
   // A number matches however it was typed: with the '+', without it, or with
-  // the spaces and dashes somebody pasted in from their contacts.
-  const qDigits = numberDigits(q);
+  // the spaces and dashes somebody pasted in from their contacts. A query
+  // with letters in it is a name or a group, not a number.
+  const qDigits = searchDigits(q);
   let list = ROSTER.filter((m) => !q
     || memberLabel(m).toLowerCase().includes(q)
     || (qDigits && (m.number || '').includes(qDigits))
@@ -2438,7 +2511,7 @@ function runSearch(q) {
   }
   for (const m of (ROSTER || [])) {
     const name = memberLabel(m);
-    const qDigits = numberDigits(q);
+    const qDigits = searchDigits(q);
     const sc = Math.max(scoreHit(name, q), qDigits && (m.number || '').includes(qDigits) ? 70 : 0);
     if (sc) extra.push({ kind: 'member', what: name, sub: `${m.groupCount} groups`, tab: 'members', tabLabel: labels.members, score: sc, mkey: m.key });
   }

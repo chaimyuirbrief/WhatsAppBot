@@ -1,7 +1,8 @@
 import log from '../util/logger.js';
+import { parseClock } from '../util/format.js';
 import {
-  assurBemelachaRuns, civilPlusDays, pickLocation, usableLocations, zmanAt, zmanLabel,
-  DEFAULT_START_ZMAN, DEFAULT_END_ZMAN,
+  assurBemelachaRuns, brokenLocations, civilPlusDays, pickLocation, usableLocations,
+  zmanAt, zmanLabel, DEFAULT_START_ZMAN, DEFAULT_END_ZMAN,
 } from './zmanim.js';
 
 const logger = log.scope('lockdown');
@@ -108,14 +109,31 @@ function weeklyCandidates(now, cfg) {
   const out = [];
 
   for (const w of windows) {
+    // A start time that cannot be read as 24-hour HH:MM is SKIPPED, not
+    // defaulted. `zonedToUtc('6pm')` yields NaN and a window at no instant at
+    // all; defaulting it to some other hour would silently lock the groups at
+    // a time nobody chose. The portal refuses to save one, so reaching here
+    // means a hand-edited config, and saying so is more use than guessing.
+    const start = parseClock(w.start);
+    if (!start) {
+      logger.warn(`window ${w.id ?? ''} "${w.label ?? ''}" skipped: `
+        + `"${w.start}" is not a 24-hour HH:MM time`);
+      continue;
+    }
     const dur = Math.max(1, Number(w.durationMinutes) || 0) * 60000;
     // ±8 days covers a window that started before `now` and one that starts
     // next week, whichever weekday it falls on.
     for (let off = -8; off <= 8; off++) {
       const day = addDays(today, off);
       if (day.dow !== Number(w.day)) continue;
-      const lockAt = zonedToUtc(day, w.start || '00:00', w.timezone || tz);
-      out.push({ lockAt, unlockAt: lockAt + dur, id: w.id ?? null, label: w.label ?? '' });
+      const lockAt = zonedToUtc(day, start, w.timezone || tz);
+      out.push({
+        lockAt, unlockAt: lockAt + dur, id: w.id ?? null, label: w.label ?? '',
+        // The lock instant, which for a weekly window is fixed by config and
+        // so is a stable identity. Unchanged from before the Shabbos lock
+        // existed, so an override stored by an older version still matches.
+        key: new Date(lockAt).toISOString(),
+      });
     }
   }
   return out;
@@ -129,7 +147,11 @@ function weeklyCandidates(now, cfg) {
  */
 const SHABBOS_LOOKBACK_DAYS = 10;
 const SHABBOS_SCAN_DAYS = 21;
+// The longest unbroken stretch: two days of yom tov running into Shabbos.
+const MAX_STRETCH_DAYS = 3;
+const PREVIEW_LOOKBACK_DAYS = 3;
 const FALLBACK_PACE_MS = 5000;
+const FALLBACK_JITTER_MS = 2000;      // matches DEFAULT_PACE_JITTER_MS in bot.js
 
 /**
  * How long before the chosen zman the walk has to start.
@@ -139,18 +161,27 @@ const FALLBACK_PACE_MS = 5000;
  * side of the line. The window therefore opens early enough for the last
  * group to be locked by the zman itself.
  *
+ * The gap between two groups is NOT `paceMs`: the pacer adds up to
+ * `whatsapp.pacing.jitterMs` of deliberate randomness on top of every one of
+ * them, so the budget has to be the WORST case, `paceMs + jitterMs`. Budgeting
+ * the average instead is how a 300-group account ends up with its last forty
+ * groups still open four minutes into Shabbos - the exact failure the lead
+ * exists to prevent. Over-budgeting costs nothing: the groups are simply shut
+ * a few minutes early.
+ *
  * `shabbos.leadMinutes` overrides the arithmetic. Left null it is worked out
- * from the group count and the pace plus a minute of slack, rounded up to the
- * whole minute the scheduler ticks on. The type check matters: `null`, `''`
- * and `false` all become 0 through `Number()`, and a lead of zero silently
- * means "finish late".
+ * from the group count and that worst-case gap, plus a minute of slack for
+ * the round trips, rounded up to the whole minute the scheduler ticks on. The
+ * type check matters: `null`, `''` and `false` all become 0 through
+ * `Number()`, and a lead of zero silently means "finish late".
  */
 export function shabbosLeadMs(cfg = {}) {
   const raw = cfg.shabbos?.leadMinutes;
   if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) return Math.round(raw) * 60000;
   const pace = typeof cfg.paceMs === 'number' && cfg.paceMs > 0 ? cfg.paceMs : FALLBACK_PACE_MS;
+  const jitter = typeof cfg.jitterMs === 'number' && cfg.jitterMs >= 0 ? cfg.jitterMs : FALLBACK_JITTER_MS;
   const groups = typeof cfg.groupCount === 'number' && cfg.groupCount > 0 ? cfg.groupCount : 0;
-  return Math.ceil((groups * pace + 60000) / 60000) * 60000;
+  return Math.ceil((groups * (pace + jitter) + 60000) / 60000) * 60000;
 }
 
 /** An offset in minutes from config, rejecting everything `Number()` would
@@ -171,8 +202,13 @@ function offsetMinutes(v) {
 export function shabbosStatus(cfg = {}, win = null) {
   const s = cfg.shabbos ?? {};
   const locs = usableLocations(s.locations);
-  const startLoc = pickLocation(locs, s.start?.locationId);
-  const endLoc = pickLocation(locs, s.end?.locationId);
+  // pickLocation gets the RAW list, exactly as the scheduler gives it: it has
+  // to be able to tell "the row you named is broken" (resolve to nothing)
+  // from "the row you named is gone" (fall back). Handing it the filtered
+  // list hides that difference and the panel reports a place the scheduler
+  // is not using.
+  const startLoc = pickLocation(s.locations, s.start?.locationId);
+  const endLoc = pickLocation(s.locations, s.end?.locationId);
   const z = win?.zmanim ?? null;
 
   const side = (which, loc, def) => (loc ? {
@@ -186,8 +222,20 @@ export function shabbosStatus(cfg = {}, win = null) {
 
   const problems = [];
   if (s.enabled) {
+    // A row that is present but unusable is named, with its reason. Silence
+    // here is how a cleared latitude turns into a lock at the wrong hour.
+    for (const b of brokenLocations(s.locations)) {
+      problems.push(`"${b.name}" cannot be used: ${b.problem}`);
+    }
     if (!locs.length) problems.push('No usable location entered yet, so nothing is scheduled.');
-    else if (!startLoc || !endLoc) problems.push('There is more than one location — pick which one each end of the lock is read from.');
+    else if (!startLoc || !endLoc) {
+      const stuck = [['Lock', s.start, startLoc], ['Unlock', s.end, endLoc]]
+        .filter(([, , loc]) => !loc)
+        .map(([which, side]) => `${which} when… is set to a location that cannot be used`);
+      problems.push(stuck.length && brokenLocations(s.locations).length
+        ? `${stuck.join(' and ')}. Nothing is scheduled until it is fixed — the lock is NOT quietly read somewhere else.`
+        : 'There is more than one location — pick which one each end of the lock is read from.');
+    }
     if (z?.start?.fallback || z?.end?.fallback) {
       problems.push('At this latitude the chosen zman has no answer on that date, so an approximation from sunset was used.');
     }
@@ -270,11 +318,20 @@ function shabbosCandidates(now, cfg, { lookbackDays = SHABBOS_LOOKBACK_DAYS, sca
       zman: s.end?.zman ?? DEFAULT_END_ZMAN, offsetMinutes: s.end?.offsetMinutes,
     });
 
+    const id = `shabbos:${run.first.y}-${run.first.m}-${run.first.d}`;
     out.push({
       lockAt: start.at - lead,
       unlockAt: end.at,
-      id: `shabbos:${run.first.y}-${run.first.m}-${run.first.d}`,
+      id,
       label: run.label,
+      // THE IDENTITY IS THE STRETCH, NOT THE INSTANT. `lockAt` moves with the
+      // head start, which is derived from the live group count, so deriving
+      // the key from it would mint a new window every time a group is added
+      // or the process restarts before the first group fetch lands - and a
+      // new key means `decide` stops honouring an admin's manual unlock and
+      // re-locks the groups in the middle of Shabbos. The date of the first
+      // assur day is the one thing about this window that cannot move.
+      key: id,
       zmanim: { start, end, leadMs: lead, endAtStartLocation: endHere?.at ?? null },
     });
   }
@@ -291,8 +348,15 @@ export function upcomingShabbosWindows(now = new Date(), cfg = {}, days = 28) {
   const span = Math.max(1, Math.min(365, Math.round(Number(days) || 28)));
   const nowMs = now.getTime();
   // Three days back so a stretch already in progress is shown as one window
-  // from its real beginning rather than from tonight.
-  return shabbosCandidates(now, cfg, { lookbackDays: 3, scanDays: span + 4, force: true })
+  // from its real beginning rather than from tonight - and far enough FORWARD
+  // that a stretch starting at the far edge is seen whole. The filter admits
+  // any window locking before now+span, and a stretch can run three days past
+  // its own erev, so a scan that stopped at now+span would emit that last one
+  // truncated: the panel would show Pesach reopening on Thursday night when
+  // the bot will actually hold it to Saturday. PREVIEW_LOOKBACK + span + a
+  // whole stretch + slack.
+  const scanDays = span + PREVIEW_LOOKBACK_DAYS + MAX_STRETCH_DAYS + 2;
+  return shabbosCandidates(now, cfg, { lookbackDays: PREVIEW_LOOKBACK_DAYS, scanDays, force: true })
     .filter((w) => w.unlockAt > nowMs && w.lockAt < nowMs + span * DAY_MS)
     .sort((a, b) => a.lockAt - b.lockAt)
     .map((w) => ({
@@ -377,7 +441,10 @@ export function lockWindow(now = new Date(), cfg = {}) {
   return {
     lockAt: new Date(cur.lockAt),
     unlockAt: new Date(cur.unlockAt),
-    key: new Date(cur.lockAt).toISOString(),
+    // The first window's own key, minted where the window was built. Merging
+    // only ever extends the end, so the identity an override was stored
+    // against keeps covering the whole merged lock.
+    key: cur.key ?? new Date(cur.lockAt).toISOString(),
     label: cur.label || '',
     zmanim: cur.zmanim ?? null,
   };

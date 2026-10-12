@@ -141,6 +141,22 @@ console.log('=== the panel\'s copy cannot drift from the server\'s ===');
     ok(bad.length === 0, `${fn} agrees on all ${WHENS.length * ZONES.length} combinations${bad.length ? ` — differs on ${JSON.stringify(bad)}` : ''}`);
   }
 
+  // searchDigits only exists in the panel: it decides whether a search box
+  // holds a number at all.
+  const sd = new Function(`${block[0].replace(/\n\/\* -+ toast$/, '')}
+    return searchDigits;`)()
+  ok(sd('+1 (732) 352-3090') === '17323523090', 'a pasted number searches as a number');
+  ok(sd('17323523090') === '17323523090' && sd('732-352') === '732352', 'with or without punctuation');
+  ok(sd('shiur 2') === '' && sd('minyan 3') === '' && sd('Rabbi 5') === '',
+     'a group name with a digit in it is NOT a number search — matching every member whose number contains that digit buries the real hit');
+  // And with enough digits to get past a length check on its own: "Daf 127"
+  // would otherwise search for 127 and hit most of the roster.
+  ok(sd('Daf 127') === '' && sd('Shiur 2024') === '' && sd('minyan 5:30') === '' && sd('zoom 8080') === '',
+     'including names with three or more digits in them');
+  ok(sd('2') === '' && sd('12') === '', 'nor are one or two stray digits');
+  ok(sd('') === '' && sd(null) === '', 'nor nothing');
+  ok(sd('123') === '123', 'but three digits is a deliberate enough search to honour');
+
   const CLOCKS = ['18:00', '18', '930', '9:5', '7pm', '24:00', '', null, '0', '1800', 'abc'];
   const clockBad = CLOCKS.filter((c) => browser.parseClock(c) !== F.parseClock(c));
   ok(clockBad.length === 0, `parseClock agrees on all ${CLOCKS.length} inputs${clockBad.length ? ` — differs on ${JSON.stringify(clockBad)}` : ''}`);

@@ -150,10 +150,18 @@ async function main() {
   // Scheduled lockdown: locks/unlocks all groups on the configured recurring windows.
   const lockState = stateStore.namespace('lockdown');
   const lockScheduler = new LockScheduler({
-    // `groupCount` is not config: the scheduler uses it to work out how many
-    // minutes before candle lighting the walk has to start so the LAST group
-    // is locked in time.
-    getConfig: () => ({ ...configStore.get().lockdown, groupCount: bot.groups?.().length ?? 0 }),
+    // `groupCount` and `jitterMs` are not lockdown config: the scheduler needs
+    // them to work out how many minutes before candle lighting the walk has to
+    // start so the LAST group is locked in time. The jitter matters because
+    // the real gap between two groups is paceMs PLUS up to jitterMs.
+    getConfig: () => {
+      const cfg = configStore.get();
+      return {
+        ...cfg.lockdown,
+        groupCount: bot.groups?.().length ?? 0,
+        jitterMs: cfg.whatsapp?.pacing?.jitterMs,
+      };
+    },
     getState: () => lockState.get('state', { locked: false, source: null, overriddenWindowKey: null }),
     persist: (st) => lockState.set('state', st),
     applyLock: async (source, { onProgress } = {}) => {
