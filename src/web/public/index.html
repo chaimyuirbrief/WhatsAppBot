@@ -123,10 +123,10 @@
         <label>Phone number <span class="hint">country code first, nothing else in it — e.g. +17323523090</span>
           <input id="f-phone" placeholder="+17323523090" inputmode="tel">
         </label>
-        <label>Link method
+        <label>Link method <span class="hint">QR is the default — the pairing code often fails to arrive</span>
           <select id="f-loginmethod">
-            <option value="pairing">Pairing code — sent to this number (no QR)</option>
-            <option value="qr">QR code — scan from the phone</option>
+            <option value="qr">QR code — scan from the phone (default)</option>
+            <option value="pairing">Pairing code — sent to this number (backup, if scanning isn't possible)</option>
           </select>
         </label>
         <label class="check"><input type="checkbox" id="f-autoreconnect"> Reconnect automatically if dropped</label>

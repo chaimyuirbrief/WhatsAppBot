@@ -150,8 +150,9 @@ Please:
 
 Two things you can't do — hand them back to me:
 - Setting the admin password. I do that on first page load.
-- Linking the phone. I enter the number in the panel and type the pairing
-  code into WhatsApp myself. Don't invent a phone number.
+- Linking the phone. I enter the number in the panel and scan the QR code (or
+  type the pairing code, if I switch to that) myself. Don't invent a phone
+  number.
 
 Once I tell you it's linked, remind me to run `node bin/backup.js create` and
 to keep that file somewhere safe.
@@ -283,13 +284,15 @@ Settings → WhatsApp account → enter the number country code first
 dashes are accepted and stripped — see
 [Numbers and times](#numbers-and-times).
 
-**Pairing code** (default): the panel shows an 8-character code. On the
-phone: WhatsApp → Settings → Linked devices → Link a device → *Link with
-phone number instead* → type the code. No QR scanning, which is what you
-want for a headless server.
+**QR** (default): the panel renders a QR code. On the phone: WhatsApp →
+Settings → Linked devices → Link a device → scan it.
 
-**QR**: the panel renders a QR to scan instead. Either works; pairing is
-easier when the phone isn't next to the screen.
+**Pairing code** (backup): the panel shows an 8-character code instead. On the
+phone: WhatsApp → Settings → Linked devices → Link a device → *Link with
+phone number instead* → type the code. Useful when the phone isn't next to the
+screen or for a headless server — but in practice the code fails to arrive
+more often than QR does, so it is the fallback, not the default; if it stalls
+on "Waiting for pairing", switch Link method to QR and try again.
 
 The session is saved in `data/session/`. It survives restarts — you only
 link once. "Unlink & wipe session" clears it.
@@ -1004,7 +1007,7 @@ and set the bind address to `127.0.0.1`.
 
 | Symptom | Cause |
 |---|---|
-| Pairing code never arrives | Number must be digits only with country code, no `+` |
+| Pairing code never arrives | Known to be flaky — switch **Link method** to QR, which is the default for this reason. If you stay on pairing, confirm the number includes the country code (`+` is fine, it's stripped automatically) |
 | Restored on a new box, but email/settings are blank | The backup had no `MASTER_KEY` — check `node bin/backup.js inspect` says "master key: included" |
 | "Wrong passphrase, or the backup file is damaged" | Exactly that. There is no recovery path; the passphrase is not stored anywhere |
 | Restore says it skipped files | The archive held paths outside the backed-up sections, or a symlink was in the way. Skipped entries are listed; nothing outside `data/` is ever written |

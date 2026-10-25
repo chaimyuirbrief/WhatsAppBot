@@ -17,7 +17,7 @@ export const DEFAULT_CONFIG = {
 
   whatsapp: {
     phoneNumber: '',            // stored as digits, country code first (shown as +17323523090)
-    loginMethod: 'pairing',     // 'pairing' (code pushed to phone) | 'qr'
+    loginMethod: 'qr',          // 'qr' (scan from the phone) | 'pairing' (code pushed to phone)
     autoReconnect: true,
     markOnline: false,          // keeping this false leaves your phone's presence alone
     // Deliberate pacing between outbound actions. This exists so the bot does

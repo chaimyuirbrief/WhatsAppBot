@@ -279,7 +279,7 @@ function fillForm(c) {
   const an = c.announce ?? {};
 
   $('f-phone').value = fmtNumber(wa.phoneNumber);
-  $('f-loginmethod').value = wa.loginMethod ?? 'pairing';
+  $('f-loginmethod').value = wa.loginMethod ?? 'qr';
   $('f-autoreconnect').checked = !!wa.autoReconnect;
   $('f-markonline').checked = !!wa.markOnline;
   $('f-mindelay').value = wa.minActionDelayMs;
