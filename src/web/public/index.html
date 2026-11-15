@@ -22,22 +22,24 @@
        second (even hidden) password field makes managers read it as a
        sign-up / change-password form and refuse to fill it, which is why the
        first-run form lives in a <template> and is only put in the page then;
-     - conventional name/id/autocomplete/label on every field, a real
-       <form method="post"> with a submit button, and a page navigation after
-       a successful sign-in, which is the signal browsers use to offer "save". -->
+     - conventional name/id/autocomplete/label on every field;
+     - a fresh sign-in is the browser's own form POST to /api/auth/signin,
+       answered with a 303 back to the panel. A submitted form followed by a
+       new page is the signal every browser and manager uses to offer "save";
+       a fetch() behind preventDefault() is invisible to most of them. -->
 <div id="gate" class="gate">
   <div class="gate-card">
     <div class="gate-logo">🤖</div>
     <h1 id="gate-title">Sign in</h1>
     <p id="gate-sub" class="muted">Enter your control panel username and password.</p>
-    <form id="gate-form" name="login" method="post" action="/api/auth/login">
+    <form id="gate-form" name="login" method="post" action="/api/auth/signin">
       <label for="username" class="sr-only">Username</label>
       <input type="text" id="username" name="username" placeholder="Username"
              autocomplete="username" autocapitalize="none" autocorrect="off"
-             spellcheck="false" required>
+             spellcheck="false" required aria-label="Username" enterkeyhint="next">
       <label for="password" class="sr-only">Password</label>
       <input type="password" id="password" name="password" placeholder="Password"
-             autocomplete="current-password" required>
+             autocomplete="current-password" required aria-label="Password" enterkeyhint="go">
       <button type="submit" class="btn primary block" id="gate-btn">Sign in</button>
       <div id="gate-err" class="err" role="alert" aria-live="polite"></div>
     </form>
@@ -67,7 +69,7 @@
   <header class="topbar">
     <div class="brand"><span class="logo">🤖</span><span>Bot Control</span></div>
     <div class="searchwrap">
-      <input id="gsearch" placeholder="Search settings, groups, members…  (press /)" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other">
+      <input id="gsearch" placeholder="Search settings, groups, members…  (press /)" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore="true" data-form-type="other">
       <div id="gsearch-results" class="search-results hidden"></div>
     </div>
     <div class="topbar-right">
@@ -278,8 +280,8 @@
         </div>
 
         <div class="row gap wrap">
-          <label class="flex1">Email address<input id="f-em-user" type="email" placeholder="you@gmail.com" autocomplete="off" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other"></label>
-          <label class="flex1">App password<input id="f-em-pass" type="password" placeholder="not set" autocomplete="new-password" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other"></label>
+          <label class="flex1">Email address<input id="f-em-user" type="email" placeholder="you@gmail.com" autocomplete="off" data-1p-ignore data-lpignore="true" data-bwignore="true" data-form-type="other"></label>
+          <label class="flex1">App password<input id="f-em-pass" type="password" placeholder="not set" autocomplete="new-password" data-1p-ignore data-lpignore="true" data-bwignore="true" data-form-type="other"></label>
         </div>
         <label>Send alerts to <span class="hint">leave blank to send to yourself</span>
           <input id="f-em-to" type="email" placeholder="same as above">
@@ -331,10 +333,10 @@
         <div id="bk-sections" class="list"><div class="empty">Loading…</div></div>
         <div class="row gap wrap" style="margin-top:10px">
           <label class="flex1">Passphrase <span class="hint">you will need this to restore — it cannot be recovered</span>
-            <input id="bk-pass" type="password" autocomplete="new-password" placeholder="at least 12 characters" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other">
+            <input id="bk-pass" type="password" autocomplete="new-password" placeholder="at least 12 characters" data-1p-ignore data-lpignore="true" data-bwignore="true" data-form-type="other">
           </label>
           <label class="flex1">Repeat
-            <input id="bk-pass2" type="password" autocomplete="new-password" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other">
+            <input id="bk-pass2" type="password" autocomplete="new-password" data-1p-ignore data-lpignore="true" data-bwignore="true" data-form-type="other">
           </label>
         </div>
         <div class="verdict warn" style="margin-top:10px">
@@ -349,7 +351,7 @@
         and restart the bot afterwards. Whatever is here now is copied aside, not deleted.</p>
         <div class="row gap wrap">
           <input type="file" id="bk-file" accept=".wabak" class="flex1">
-          <input id="bk-rpass" type="password" placeholder="passphrase" autocomplete="new-password" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other" class="flex1">
+          <input id="bk-rpass" type="password" placeholder="passphrase" autocomplete="new-password" data-1p-ignore data-lpignore="true" data-bwignore="true" data-form-type="other" class="flex1">
         </div>
         <div id="bk-preview" class="small" style="margin-top:8px"></div>
         <div class="row gap wrap" style="margin-top:10px">
@@ -574,8 +576,8 @@ npm start</pre>
         <div id="admins-list" class="list"></div>
         <h3>Add an admin</h3>
         <div class="row gap wrap">
-          <input id="na-user" placeholder="username" autocomplete="off" autocapitalize="none" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other" class="flex1">
-          <input id="na-pass" type="password" placeholder="password (8+ chars)" autocomplete="new-password" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other" class="flex1">
+          <input id="na-user" placeholder="username" autocomplete="off" autocapitalize="none" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore="true" data-form-type="other" class="flex1">
+          <input id="na-pass" type="password" placeholder="password (8+ chars)" autocomplete="new-password" data-1p-ignore data-lpignore="true" data-bwignore="true" data-form-type="other" class="flex1">
           <select id="na-role"><option value="admin">admin</option><option value="superadmin">super-admin</option></select>
           <input id="na-mins" type="number" min="0" placeholder="session mins" style="width:120px" title="How long they may stay signed in. 0 = no timeout, super-admins only.">
           <button class="btn small primary" id="na-add">Add</button>

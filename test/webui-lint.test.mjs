@@ -84,7 +84,7 @@ console.log('=== no function is called but never defined ===');
   ]);
   const builtins = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'typeof', 'function',
     'async', 'await', 'of', 'in', 'delete', 'void', 'yield', 'isFinite', 'prompt', 'EventSource',
-    'URLSearchParams', 'FormData', 'Intl', 'AbortController', 'structuredClone', 'queueMicrotask',
+    'URL', 'URLSearchParams', 'FormData', 'Intl', 'AbortController', 'structuredClone', 'queueMicrotask',
     'fetch', 'confirm', 'alert', 'parseInt', 'parseFloat', 'String', 'Number', 'Boolean', 'Array',
     'Object', 'JSON', 'Math', 'Date', 'Set', 'Map', 'Promise', 'RegExp', 'Error', 'console',
     'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'encodeURIComponent',
