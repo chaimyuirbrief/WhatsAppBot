@@ -38,9 +38,9 @@ function sessionExpired(why) {
   // lapsed session. "Unauthorized" for all three is how people conclude the
   // panel is broken.
   $('gate-sub').textContent = why || 'Your session ended. Sign in to continue.';
-  $('gate-pw').value = '';
-  $('gate-pw2').classList.add('hidden');
-  $('gate-btn').textContent = 'Sign in';
+  $('password').value = '';
+  // Pre-fill who was signed in, so the manager only has to supply the password.
+  if (CURRENT_USER?.username && !$('username').value) $('username').value = CURRENT_USER.username;
   $('gate-err').textContent = '';
   showGate();
 }
@@ -170,17 +170,16 @@ async function boot() {
     SETUP_MODE = true;
     $('gate-title').textContent = 'Set a super-admin password';
     $('gate-sub').textContent = 'First run — create the super-admin login (username is "superadmin"). At least 8 characters.';
-    $('gate-user').classList.add('hidden');
-    $('gate-pw').placeholder = 'New password';
-    $('gate-pw').autocomplete = 'new-password';
-    $('gate-pw2').classList.remove('hidden');
-    $('gate-btn').textContent = 'Create';
+    // Swap the sign-in form for the first-run one rather than reshaping it:
+    // one form, one purpose, is what lets managers classify it.
+    $('gate-form').replaceWith($('tpl-setup').content.cloneNode(true));
+    $('setup-form').addEventListener('submit', onSetupSubmit);
     showGate();
   } else if (!status.authed) {
-    $('gate-user').classList.remove('hidden');
     showGate();
   } else {
     CURRENT_USER = status.user;
+    $('gate').classList.add('hidden');   // shown by default; see index.html
     await enterApp();
   }
 }
@@ -188,29 +187,68 @@ async function boot() {
 function showGate() {
   $('gate').classList.remove('hidden');
   $('app').classList.add('hidden');
-  setTimeout(() => $('gate-pw').focus(), 60);
+  // Focus the first empty field. Never steal focus from a field the user (or
+  // their password manager's inline menu) is already in.
+  setTimeout(() => {
+    if (document.activeElement?.tagName === 'INPUT') return;
+    const first = SETUP_MODE ? $('setup-pw') : ($('username').value ? $('password') : $('username'));
+    first?.focus();
+  }, 60);
+}
+
+/** Hand the credential to the browser's store where there is an API for it
+    (Chromium's Credential Management). Everything else saves on the page
+    navigation that follows; this only makes Chromium's prompt reliable. */
+async function offerToSave(form) {
+  try {
+    if (window.PasswordCredential && navigator.credentials?.store) {
+      await navigator.credentials.store(new window.PasswordCredential(form));
+    }
+  } catch { /* unsupported or declined - the navigation still triggers it */ }
+}
+
+/** A real navigation after signing in: browsers and managers that watch for
+    a "successful submit" (Firefox, Safari, Chrome, most extensions) treat a
+    form that just disappears behind JavaScript as abandoned. Re-signing in
+    after a timeout stays in place so unsaved edits in the panel survive. */
+async function afterSignIn(form, user) {
+  if (!gateShownForExpiry) {
+    await offerToSave(form);
+    location.replace(location.pathname);
+    return;
+  }
+  CURRENT_USER = user ?? null;
+  $('gate').classList.add('hidden');
+  gateShownForExpiry = false;
+  await enterApp();
 }
 
 $('gate-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const pw = $('gate-pw').value;
   $('gate-err').textContent = '';
+  $('gate-btn').disabled = true;
   try {
-    let r;
-    if (SETUP_MODE) {
-      if (pw !== $('gate-pw2').value) { $('gate-err').textContent = 'Passwords do not match'; return; }
-      r = await api('POST', '/auth/setup', { password: pw });
-    } else {
-      r = await api('POST', '/auth/login', { username: $('gate-user').value.trim(), password: pw });
-    }
-    CURRENT_USER = r.user ?? null;
-    $('gate').classList.add('hidden');
-    gateShownForExpiry = false;
-    await enterApp();
+    const r = await api('POST', '/auth/login', { username: $('username').value.trim(), password: $('password').value });
+    await afterSignIn(e.target, r.user);
   } catch (err) {
     $('gate-err').textContent = err.message;
+  } finally {
+    $('gate-btn').disabled = false;
   }
 });
+
+async function onSetupSubmit(e) {
+  e.preventDefault();
+  const pw = $('setup-pw').value;
+  $('setup-err').textContent = '';
+  if (pw !== $('setup-pw2').value) { $('setup-err').textContent = 'Passwords do not match'; return; }
+  try {
+    const r = await api('POST', '/auth/setup', { password: pw });
+    await afterSignIn(e.target, r.user);
+  } catch (err) {
+    $('setup-err').textContent = err.message;
+  }
+}
 
 $('btn-logout').addEventListener('click', async () => {
   await api('POST', '/auth/logout');
@@ -1262,7 +1300,8 @@ function scrollLog() {
 $('btn-log-clear').addEventListener('click', () => { logLines = []; renderLog(); });
 
 /* --------------------------- password ------------------------------ */
-$('btn-chpw').addEventListener('click', async () => {
+$('chpw-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
   try {
     await api('POST', '/auth/password', { current: $('f-pw-cur').value, next: $('f-pw-new').value });
     $('f-pw-cur').value = ''; $('f-pw-new').value = '';
@@ -1747,6 +1786,7 @@ $('bk-restore')?.addEventListener('click', async () => {
 function applyUser() {
   const u = CURRENT_USER;
   $('who').textContent = u ? `${u.username}${u.role === 'superadmin' ? ' · super-admin' : ''}` : '';
+  $('chpw-user').value = u?.username ?? '';   // which saved login a password change updates
   const isSuper = u?.role === 'superadmin';
   document.querySelectorAll('.superadmin-only').forEach((el) => el.classList.toggle('hidden', !isSuper));
 }

@@ -28,6 +28,13 @@ body {
   -webkit-text-size-adjust: 100%;
 }
 .hidden { display: none !important; }
+/* Present to screen readers and password-manager heuristics, invisible on
+   screen. Not display:none - managers skip fields they consider hidden. */
+.sr-only {
+  position: absolute !important; width: 1px !important; height: 1px !important;
+  padding: 0 !important; margin: -1px !important; overflow: hidden !important;
+  clip: rect(0 0 0 0) !important; white-space: nowrap !important; border: 0 !important;
+}
 .muted { color: var(--muted); }
 .small { font-size: 13px; }
 .flex1 { flex: 1; min-width: 0; }

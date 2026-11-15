@@ -13,27 +13,61 @@
 <body>
 
 <!-- ============ GATE: setup / login ============ -->
-<div id="gate" class="gate hidden">
+<!-- Written for password managers (browser-built-in, extension, and the OS
+     autofill services that Firefox/Chrome for Android and iOS hand forms to):
+     - visible from the first paint: Android autofill and several extensions
+       only scan fields that are rendered when the page loads, so the gate is
+       hidden by JS once /auth/status says you are signed in, never shown late;
+     - exactly one text field and one password field in the sign-in form. A
+       second (even hidden) password field makes managers read it as a
+       sign-up / change-password form and refuse to fill it, which is why the
+       first-run form lives in a <template> and is only put in the page then;
+     - conventional name/id/autocomplete/label on every field, a real
+       <form method="post"> with a submit button, and a page navigation after
+       a successful sign-in, which is the signal browsers use to offer "save". -->
+<div id="gate" class="gate">
   <div class="gate-card">
     <div class="gate-logo">🤖</div>
     <h1 id="gate-title">Sign in</h1>
-    <p id="gate-sub" class="muted">Enter your control panel password.</p>
-    <form id="gate-form" autocomplete="off">
-      <input type="text" id="gate-user" placeholder="Username" autocomplete="username">
-      <input type="password" id="gate-pw" placeholder="Password" autocomplete="current-password" required>
-      <input type="password" id="gate-pw2" class="hidden" placeholder="Confirm password" autocomplete="new-password">
+    <p id="gate-sub" class="muted">Enter your control panel username and password.</p>
+    <form id="gate-form" name="login" method="post" action="/api/auth/login">
+      <label for="username" class="sr-only">Username</label>
+      <input type="text" id="username" name="username" placeholder="Username"
+             autocomplete="username" autocapitalize="none" autocorrect="off"
+             spellcheck="false" required>
+      <label for="password" class="sr-only">Password</label>
+      <input type="password" id="password" name="password" placeholder="Password"
+             autocomplete="current-password" required>
       <button type="submit" class="btn primary block" id="gate-btn">Sign in</button>
-      <div id="gate-err" class="err"></div>
+      <div id="gate-err" class="err" role="alert" aria-live="polite"></div>
     </form>
   </div>
 </div>
+
+<!-- First run only. The username is shown (read-only) rather than left out so
+     the manager saves the new password against "superadmin". -->
+<template id="tpl-setup">
+  <form id="setup-form" name="setup" method="post" action="/api/auth/setup">
+    <label for="setup-user" class="sr-only">Username</label>
+    <input type="text" id="setup-user" name="username" value="superadmin"
+           autocomplete="username" readonly>
+    <label for="setup-pw" class="sr-only">New password</label>
+    <input type="password" id="setup-pw" name="new-password" placeholder="New password"
+           autocomplete="new-password" minlength="8" required>
+    <label for="setup-pw2" class="sr-only">Confirm password</label>
+    <input type="password" id="setup-pw2" name="confirm-password" placeholder="Confirm password"
+           autocomplete="new-password" minlength="8" required>
+    <button type="submit" class="btn primary block" id="setup-btn">Create</button>
+    <div id="setup-err" class="err" role="alert" aria-live="polite"></div>
+  </form>
+</template>
 
 <!-- ============ APP ============ -->
 <div id="app" class="hidden">
   <header class="topbar">
     <div class="brand"><span class="logo">🤖</span><span>Bot Control</span></div>
     <div class="searchwrap">
-      <input id="gsearch" placeholder="Search settings, groups, members…  (press /)" autocomplete="off" spellcheck="false">
+      <input id="gsearch" placeholder="Search settings, groups, members…  (press /)" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other">
       <div id="gsearch-results" class="search-results hidden"></div>
     </div>
     <div class="topbar-right">
@@ -244,8 +278,8 @@
         </div>
 
         <div class="row gap wrap">
-          <label class="flex1">Email address<input id="f-em-user" type="email" placeholder="you@gmail.com" autocomplete="off"></label>
-          <label class="flex1">App password<input id="f-em-pass" type="password" placeholder="not set" autocomplete="new-password"></label>
+          <label class="flex1">Email address<input id="f-em-user" type="email" placeholder="you@gmail.com" autocomplete="off" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other"></label>
+          <label class="flex1">App password<input id="f-em-pass" type="password" placeholder="not set" autocomplete="new-password" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other"></label>
         </div>
         <label>Send alerts to <span class="hint">leave blank to send to yourself</span>
           <input id="f-em-to" type="email" placeholder="same as above">
@@ -267,12 +301,17 @@
 
       <div class="card">
         <h2>My password</h2>
-        <div class="row gap wrap">
-          <label class="flex1">Current<input id="f-pw-cur" type="password" autocomplete="current-password"></label>
-          <label class="flex1">New<input id="f-pw-new" type="password" autocomplete="new-password"></label>
-        </div>
-        <button class="btn small" id="btn-chpw">Update my password</button>
-        <span id="pw-result" class="muted small"></span>
+        <!-- A change-password form managers recognise: the (hidden) username
+             tells them which saved login to update. -->
+        <form id="chpw-form" name="change-password" method="post" action="/api/auth/password">
+          <input type="text" id="chpw-user" name="username" autocomplete="username" class="sr-only" tabindex="-1" aria-hidden="true" readonly>
+          <div class="row gap wrap">
+            <label class="flex1">Current<input id="f-pw-cur" name="current-password" type="password" autocomplete="current-password" required></label>
+            <label class="flex1">New<input id="f-pw-new" name="new-password" type="password" autocomplete="new-password" minlength="8" required></label>
+          </div>
+          <button type="submit" class="btn small" id="btn-chpw">Update my password</button>
+          <span id="pw-result" class="muted small"></span>
+        </form>
       </div>
 
       <div class="card">
@@ -292,10 +331,10 @@
         <div id="bk-sections" class="list"><div class="empty">Loading…</div></div>
         <div class="row gap wrap" style="margin-top:10px">
           <label class="flex1">Passphrase <span class="hint">you will need this to restore — it cannot be recovered</span>
-            <input id="bk-pass" type="password" autocomplete="new-password" placeholder="at least 12 characters">
+            <input id="bk-pass" type="password" autocomplete="new-password" placeholder="at least 12 characters" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other">
           </label>
           <label class="flex1">Repeat
-            <input id="bk-pass2" type="password" autocomplete="new-password">
+            <input id="bk-pass2" type="password" autocomplete="new-password" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other">
           </label>
         </div>
         <div class="verdict warn" style="margin-top:10px">
@@ -310,7 +349,7 @@
         and restart the bot afterwards. Whatever is here now is copied aside, not deleted.</p>
         <div class="row gap wrap">
           <input type="file" id="bk-file" accept=".wabak" class="flex1">
-          <input id="bk-rpass" type="password" placeholder="passphrase" autocomplete="off" class="flex1">
+          <input id="bk-rpass" type="password" placeholder="passphrase" autocomplete="new-password" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other" class="flex1">
         </div>
         <div id="bk-preview" class="small" style="margin-top:8px"></div>
         <div class="row gap wrap" style="margin-top:10px">
@@ -535,8 +574,8 @@ npm start</pre>
         <div id="admins-list" class="list"></div>
         <h3>Add an admin</h3>
         <div class="row gap wrap">
-          <input id="na-user" placeholder="username" class="flex1">
-          <input id="na-pass" type="password" placeholder="password (8+ chars)" class="flex1">
+          <input id="na-user" placeholder="username" autocomplete="off" autocapitalize="none" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other" class="flex1">
+          <input id="na-pass" type="password" placeholder="password (8+ chars)" autocomplete="new-password" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other" class="flex1">
           <select id="na-role"><option value="admin">admin</option><option value="superadmin">super-admin</option></select>
           <input id="na-mins" type="number" min="0" placeholder="session mins" style="width:120px" title="How long they may stay signed in. 0 = no timeout, super-admins only.">
           <button class="btn small primary" id="na-add">Add</button>
