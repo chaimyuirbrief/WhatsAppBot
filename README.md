@@ -107,6 +107,8 @@ change.
 **Operations**
 - Web control panel with accounts and roles, scrypt-hashed passwords and an
   audit log of every action taken through it
+- Sign-in works with every major password manager, on every browser and
+  device, including saving a changed password to the same login
 - Debug log always at full detail, rotated and gzipped, viewable and
   downloadable from the panel
 - Email alerts on error, and a daily summary
@@ -621,6 +623,39 @@ mid-task is otherwise indistinguishable from the panel being broken.
 
 ---
 
+## Signing in with a password manager
+
+The sign-in page works with the password manager built into Chrome, Edge,
+Safari and Firefox, and with 1Password, Bitwarden, LastPass and Dashlane — on
+desktop and mobile alike. The first time you sign in, you'll be offered to
+save the login; after that, both the username and password fill in
+automatically.
+
+This works because signing in is a genuine HTML form submission, not a script
+faking one. Safari, Firefox and Samsung Internet in particular only offer to
+save a login after a real page submission; a script that intercepts the
+submit and sends the password with `fetch()` instead is invisible to them.
+First-run setup and a re-sign-in after your session times out stay on that
+`fetch()` path deliberately — there's nothing to navigate to in either case —
+but they still hand the finished login to the browser directly, so it's
+remembered either way.
+
+Changing your own password (Settings → **My password**) updates the *same*
+saved login rather than adding a second one, because the form carries your
+username alongside the new password, hidden from view. Every other
+password-shaped field in the panel — an email app password, a backup
+passphrase, another admin's password when you create their account — is
+marked so a manager leaves it alone rather than offering to fill or save your
+own login into it.
+
+**If 1Password offers identities instead of your login** (this shows up on
+Android Firefox in particular): it means 1Password hasn't yet associated a
+saved login with this panel's address. Open the saved login in 1Password and
+add the panel's address as one of its websites — after that, only the login
+is offered.
+
+---
+
 ## Backup and moving to a new machine
 
 One encrypted file holds everything needed to stand this bot up again
@@ -858,8 +893,12 @@ rules routing, the member roster and identity merging, ban-and-wipe, group
 admin actions, auth and rate limiting, log rotation, the one phone-number and
 one time format (including that the panel's mirrored copy of the rules cannot
 drift from the server's, and a scan of the whole source tree so neither format
-can be reintroduced), and a lint pass over the control panel that checks every
-element the frontend drives actually exists.
+can be reintroduced), the sign-in form against a real running server (the
+right password, a wrong one, repeated failures tripping the rate limit, a
+foreign `Origin` refused, a reverse-proxied `Origin` honoured, and the JSON
+route left unchanged), every field's autocomplete and manager-ignore
+attributes, and a lint pass over the control panel that checks every element
+the frontend drives actually exists.
 No network and no WhatsApp connection needed.
 
 ---
@@ -980,7 +1019,11 @@ another machine. That means anyone on your LAN can reach it too — and it holds
 a live WhatsApp session that can read and send as your number, kick and ban
 members, and delete other people's messages.
 
-- Password login, scrypt-hashed, with rate limiting (8 tries / 15 min).
+- Password login, scrypt-hashed, with rate limiting (8 tries / 15 min) — shared
+  between the JSON sign-in route and the real `<form>` POST the sign-in page
+  itself submits to.
+- The sign-in form's POST checks login CSRF: a request whose `Origin` claims
+  to come from another site is refused before the password is even looked at.
 - Accounts have roles; destructive account management is super-admin only.
 - Per-account sign-in time limits, enforced server-side on every request. Only
   a super-admin account may have no timeout. Removing an account, demoting it,
