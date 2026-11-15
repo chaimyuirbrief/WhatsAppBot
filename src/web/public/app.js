@@ -165,6 +165,7 @@ function toast(msg, bad = false) {
 let CURRENT_USER = null;
 
 async function boot() {
+  applySigninResult();
   const status = await api('GET', '/auth/status');
   if (status.setupRequired) {
     SETUP_MODE = true;
@@ -196,40 +197,69 @@ function showGate() {
   }, 60);
 }
 
-/** Hand the credential to the browser's store where there is an API for it
-    (Chromium's Credential Management). Everything else saves on the page
-    navigation that follows; this only makes Chromium's prompt reliable. */
-async function offerToSave(form) {
+/** Tell the browser directly that this is a login to keep, for sign-ins that
+    happen in the background (re-sign-in after a timeout, first-run setup, a
+    password change). Chrome, Edge, Opera and Samsung Internet act on it on
+    every platform; elsewhere it does nothing, and the fresh sign-in's real
+    form post is what those browsers save from. */
+async function rememberLogin(id, password) {
+  if (!id || !password) return;
   try {
     if (window.PasswordCredential && navigator.credentials?.store) {
-      await navigator.credentials.store(new window.PasswordCredential(form));
+      await navigator.credentials.store(new window.PasswordCredential({ id, password, name: id }));
     }
-  } catch { /* unsupported or declined - the navigation still triggers it */ }
+  } catch { /* a browser that declines is not an error */ }
 }
 
-/** A real navigation after signing in: browsers and managers that watch for
-    a "successful submit" (Firefox, Safari, Chrome, most extensions) treat a
-    form that just disappears behind JavaScript as abandoned. Re-signing in
-    after a timeout stays in place so unsaved edits in the panel survive. */
-async function afterSignIn(form, user) {
-  if (!gateShownForExpiry) {
-    await offerToSave(form);
-    location.replace(location.pathname);
-    return;
-  }
-  CURRENT_USER = user ?? null;
-  $('gate').classList.add('hidden');
-  gateShownForExpiry = false;
-  await enterApp();
+const SIGNIN_USER_KEY = 'signin-user';
+const SIGNIN_MESSAGES = {
+  wrong: 'Wrong username or password',
+  limited: 'Too many attempts. Wait 15 minutes.',
+  refused: 'That sign-in did not come from this page. Try again here.',
+  error: 'Signing in failed on the server. Try again.',
+};
+
+/** After the form post comes back to /?signin=<result>: say what happened,
+    drop the parameter so a reload does not repeat it, and put back the
+    username that was typed (never sent in the URL). */
+function applySigninResult() {
+  let result = null;
+  try {
+    const url = new URL(window.location.href);
+    result = url.searchParams.get('signin');
+    if (result !== null) {
+      url.searchParams.delete('signin');
+      window.history?.replaceState(null, '', url.pathname + url.search + url.hash);
+    }
+  } catch { /* no URL to read */ }
+  if (result) $('gate-err').textContent = SIGNIN_MESSAGES[result] ?? SIGNIN_MESSAGES.error;
+  try {
+    const kept = window.sessionStorage?.getItem(SIGNIN_USER_KEY);
+    if (kept && !$('username').value) $('username').value = kept;
+    window.sessionStorage?.removeItem(SIGNIN_USER_KEY);
+  } catch { /* storage blocked - the user retypes it */ }
 }
 
 $('gate-form').addEventListener('submit', async (e) => {
+  const username = $('username').value.trim();
+  // A fresh sign-in is the browser's own form post: no preventDefault().
+  if (!gateShownForExpiry) {
+    try { window.sessionStorage?.setItem(SIGNIN_USER_KEY, username); } catch { /* optional */ }
+    $('gate-btn').textContent = 'Signing in…';
+    return;
+  }
+  // Re-sign-in after a timeout stays on the page so nothing on screen is lost.
   e.preventDefault();
+  const password = $('password').value;
   $('gate-err').textContent = '';
   $('gate-btn').disabled = true;
   try {
-    const r = await api('POST', '/auth/login', { username: $('username').value.trim(), password: $('password').value });
-    await afterSignIn(e.target, r.user);
+    const r = await api('POST', '/auth/login', { username, password });
+    await rememberLogin(username, password);
+    CURRENT_USER = r.user ?? null;
+    $('gate').classList.add('hidden');
+    gateShownForExpiry = false;
+    await enterApp();
   } catch (err) {
     $('gate-err').textContent = err.message;
   } finally {
@@ -243,8 +273,9 @@ async function onSetupSubmit(e) {
   $('setup-err').textContent = '';
   if (pw !== $('setup-pw2').value) { $('setup-err').textContent = 'Passwords do not match'; return; }
   try {
-    const r = await api('POST', '/auth/setup', { password: pw });
-    await afterSignIn(e.target, r.user);
+    await api('POST', '/auth/setup', { password: pw });
+    await rememberLogin($('setup-user').value, pw);
+    window.location.replace(window.location.pathname);
   } catch (err) {
     $('setup-err').textContent = err.message;
   }
@@ -1303,7 +1334,9 @@ $('btn-log-clear').addEventListener('click', () => { logLines = []; renderLog();
 $('chpw-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   try {
-    await api('POST', '/auth/password', { current: $('f-pw-cur').value, next: $('f-pw-new').value });
+    const next = $('f-pw-new').value;
+    await api('POST', '/auth/password', { current: $('f-pw-cur').value, next });
+    await rememberLogin(CURRENT_USER?.username, next);
     $('f-pw-cur').value = ''; $('f-pw-new').value = '';
     $('pw-result').innerHTML = '<span style="color:var(--accent)">updated</span>';
     toast('Password updated');

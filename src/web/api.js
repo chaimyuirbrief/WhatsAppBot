@@ -33,6 +33,20 @@ const APP_ROOT_FALLBACK = path.resolve(path.dirname(fileURLToPath(import.meta.ur
  * A page size from a query string: `fallback` when absent or nonsense, clamped
  * to [1, max] otherwise. Never returns 0 - callers read that as "unlimited".
  */
+/** A form POST came from this panel's own page. No Origin header (an old
+    browser, or a non-browser client) is allowed: the CSRF risk is a browser
+    on another site, and every current browser sends Origin on a POST. Behind a
+    reverse proxy or tunnel, the public host arrives as X-Forwarded-Host. */
+export function sameOriginPost(req) {
+  const origin = req.get('origin');
+  if (origin === undefined) return true;
+  let host;
+  try { host = new URL(origin).host.toLowerCase(); } catch { return false; }   // includes "null"
+  const own = [req.get('host'), req.get('x-forwarded-host')?.split(',')[0]]
+    .filter(Boolean).map((h) => h.trim().toLowerCase());
+  return own.includes(host);
+}
+
 function clampPage(raw, fallback, max) {
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 1) return fallback;
@@ -125,6 +139,28 @@ export function createApiRouter({ configStore, bot, queue, pluginManager, stateS
     }
     recordFailure(req);
     res.status(401).json({ error: 'Wrong username or password' });
+  });
+
+  /* The sign-in form's own POST (application/x-www-form-urlencoded).
+     A password manager offers to save a login when it sees a form really
+     submitted and the page move on; a fetch() behind preventDefault() is
+     invisible to Safari, Firefox and Samsung Internet. So a fresh sign-in is
+     the browser's form post, answered with a 303 back to the panel. The JSON
+     route above stays for re-sign-in after a timeout (which must not reload
+     the page) and for anything scripted. */
+  router.post('/auth/signin', express.urlencoded({ extended: false, limit: '4kb' }), (req, res) => {
+    const back = (result) => res.redirect(303, result ? `/?signin=${result}` : '/');
+    // Login CSRF: another site must not be able to sign this browser in to an
+    // account of its choosing. Browsers send Origin on every form POST.
+    if (!sameOriginPost(req)) return back('refused');
+    if (isRateLimited(req)) return back('limited');
+    const user = authenticate(configStore, req.body?.username, req.body?.password);
+    if (!user) { recordFailure(req); return back('wrong'); }
+    clearFailures(req);
+    startSession(configStore, req, user);
+    audit(req, 'login');
+    // Saved before redirecting, or the panel can load before the session exists.
+    req.session.save((err) => (err ? res.redirect(303, '/?signin=error') : back(null)));
   });
 
   router.post('/auth/logout', (req, res) => {
