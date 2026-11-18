@@ -741,6 +741,69 @@ cron line:
 
 Keep those somewhere you would keep a password.
 
+## Data archive
+
+Everything the bot sees is kept, so that when something happens in a group an
+admin can go back and look at what was actually said, by whom, and what was
+deleted afterwards.
+
+- **Where:** `data/archive/<YYYY-MM-DD>/<HH>.jsonl`, one file per UTC hour,
+  one JSON record per line. Nothing is ever pruned.
+- **What:** group and direct messages (live, the backfill after a reconnect,
+  and WhatsApp's history sync) with text, sender, number, name, reply-to,
+  mentions, reactions and edits; deleted messages; everything the bot sends,
+  reacts with, edits or deletes, including sends that failed; joins, leaves,
+  removals, promotions and join requests; snapshots of the member lists, group
+  descriptions and member activity, written only when they change (checked a
+  minute after start, then every six hours); and changed versions of request
+  rows from any plugin that exposes `bot.requestStores` (`[{ name, rows() }]`,
+  checked every minute). The first start also writes what the bot already had
+  as `seed:*` records, once per machine.
+- **Where to look:** the **Audits** tab, card **Data collected** — status,
+  backup state and a search by words, number and kind. A member's card on the
+  **Members** tab shows their last 100 archived messages.
+
+### It is backed up off the machine, sealed
+
+Each **finished** hour is gzipped, sealed with AES-256-GCM and committed to an
+orphan branch, `data-archive`, of this install's own git remote. The bot keeps
+its own clone for that in `data/data-archive-backup`. It runs 30 seconds after
+start and then at five past every hour, retries after 15 minutes if a push
+fails, and pushes at most 500 hours at a time. Every hour is written to the
+branch once and never changed. On a new machine, any hour the branch has and
+the machine lacks is opened and put back into `data/archive`.
+
+**Installers: put `BACKUP_PASSPHRASE` in `.env`.**
+
+```
+BACKUP_PASSPHRASE=a-long-secret-you-keep-somewhere-safe
+```
+
+The key is derived from that passphrase and a random salt kept on the branch
+(`KEY-SALT`). Without the passphrase the branch is unreadable, including to
+you, so keep it with your other passwords. If it is missing the bot refuses to
+push anything, says so in the log and on the **Data collected** card, and the
+archive stays on this machine only. The box must be able to push to the git
+remote it was cloned from.
+
+## Links group: also taking files
+
+The **Audits** tab, card **Links group: also taking files**, lists people who
+are in a direct download links group and who also had files sent to them
+somewhere else. Pick the links groups there (none ticked means any group whose
+name contains "direct download links") and press **Run**. People are sorted:
+
+- **Clear** — sent `#request` in the links group itself, and had files sent.
+- **Likely** — wrote in the links group two or more times.
+- **Weak** — wrote there exactly once.
+- **Only a member** — is in it but never wrote there.
+
+Each entry says why in a sentence and opens the member's card. The check only
+lists; it never removes, warns or messages anyone. Every reason can be innocent,
+so read it before deciding anything. Files come from plugins that expose request
+rows; rows with status sent, resent, partial or queued count, beta rows and rows
+from the links group itself do not.
+
 ---
 
 ## Auto-moderation
@@ -897,7 +960,11 @@ can be reintroduced), the sign-in form against a real running server (the
 right password, a wrong one, repeated failures tripping the rate limit, a
 foreign `Origin` refused, a reverse-proxied `Origin` honoured, and the JSON
 route left unchanged), every field's autocomplete and manager-ignore
-attributes, and a lint pass over the control panel that checks every element
+attributes, the data archive (every kind of record, de-duplication, binary
+trimming, request versions, snapshots only on change, seeding once), its
+sealed backup against a real local git remote (only finished hours, written
+once, restore onto a fresh machine, a wrong or missing passphrase), the
+links-group check's tiers, and a lint pass over the control panel that checks every element
 the frontend drives actually exists.
 No network and no WhatsApp connection needed.
 
@@ -990,6 +1057,9 @@ src/
     members.js          the cross-group member roster
     member-activity.js  per-member post counts
     message-index.js    recent message keys, so a ban can wipe what they posted
+    data-archive.js     everything the bot sees, kept by the hour
+    data-archive-backup.js  finished hours sealed onto the data-archive branch
+    links-audit.js      links-group members who also take files (lists only)
     announce.js         admin-activity announcements, with mention handling
     admin-commands.js   local privileged ops via data/bot-cmd.json
     alerts.js           error/summary email triggers

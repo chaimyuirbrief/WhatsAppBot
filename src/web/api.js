@@ -15,6 +15,7 @@ import {
 import { verifyPassword } from '../util/crypto.js';
 import { fmtBytes, numberDigits, numberProblem, fmtNumber } from '../util/format.js';
 import { aggregateMembers, memberDetail } from '../core/members.js';
+import { linksAudit, linksGroupsOf } from '../core/links-audit.js';
 import { queryAudit, summarize, classify } from '../core/audit.js';
 import {
   collectBackup, packBackup, unpackBackup, inspectBackup, restoreBackup,
@@ -583,6 +584,92 @@ export function createApiRouter({ configStore, bot, queue, pluginManager, stateS
     }
   });
 
+  /* ------------------------ data archive + audits ----------------- */
+
+  const withoutRaw = ({ raw, ...rest }) => rest;
+  const requestRows = () => (bot.archive?.requestStores ?? []).flatMap((st) => {
+    try { return (st.rows() ?? []).map((r) => ({ plugin: st.name, ...r })); } catch { return []; }
+  });
+
+  function runLinksAudit() {
+    const groups = bot.groupsWithMembers();
+    const chosen = linksGroupsOf(configStore.get(), groups);
+    const links = new Set(chosen);
+    const messages = links.size && bot.archive
+      ? bot.archive.search({ keep: (r) => r.kind === 'message' && links.has(r.chat), pick: withoutRaw, limit: 100_000 })
+      : [];
+    const result = linksAudit({
+      groups,
+      activity: bot.memberActivity?.all() ?? {},
+      history: requestRows(),
+      msgIndex: bot.messageIndex?.entries ?? [],
+      messages,
+      linksGroups: chosen,
+    });
+    return {
+      ...result,
+      chosen,
+      configured: (configStore.get().audits?.linksGroups ?? []).length > 0,
+      groups: groups.map((g) => ({ jid: g.jid, subject: g.subject })).sort((a, b) => String(a.subject).localeCompare(String(b.subject))),
+    };
+  }
+
+  /** People in a links group who also have files sent to them. Lists only. */
+  router.get('/audits/links', guard, (req, res) => {
+    try { res.json(runLinksAudit()); }
+    catch (err) { res.status(bot.isConnected() ? 400 : 503).json({ error: err.message }); }
+  });
+
+  /** Choose the links groups ([] = pick by name). */
+  router.put('/audits/links/groups', guard, (req, res) => {
+    const list = req.body?.groups;
+    if (!Array.isArray(list) || list.some((j) => typeof j !== 'string' || !j.endsWith('@g.us'))) {
+      return res.status(400).json({ error: 'groups must be a list of group ids' });
+    }
+    const groups = [...new Set(list)];
+    configStore.update({ audits: { linksGroups: groups } });
+    audit(req, 'set links groups', groups.length ? `${groups.length} chosen` : 'cleared (pick by name)');
+    res.json({ ok: true, linksGroups: groups });
+  });
+
+  router.get('/archive/status', guard, (req, res) => {
+    res.json({
+      archive: bot.archive?.status() ?? null,
+      backup: bot.archiveBackup?.status() ?? null,
+    });
+  });
+
+  /** Search the archive. q = text, who = number or jid, kind, chat. Raw payloads are dropped. */
+  router.get('/archive/search', guard, (req, res) => {
+    if (!bot.archive) return res.status(503).json({ error: 'the data archive is not running' });
+    const q = String(req.query.q ?? '').trim().toLowerCase();
+    const whoRaw = String(req.query.who ?? '').trim();
+    const whoNum = numberDigits(whoRaw);
+    const kind = String(req.query.kind ?? '').trim();
+    const chat = String(req.query.chat ?? '').trim();
+    const limit = clampPage(req.query.limit, 200, 1000);
+    const results = bot.archive.search({
+      keep: (r) => {
+        if (kind && r.kind !== kind) return false;
+        if (chat && r.chat !== chat) return false;
+        if (whoRaw) {
+          const hit = (whoNum && numberDigits(r.number) === whoNum)
+            || r.from === whoRaw
+            || (whoNum && String(r.from ?? '').startsWith(`${whoNum}@`));
+          if (!hit) return false;
+        }
+        if (q) {
+          const hay = `${r.text ?? ''} ${r.edit ?? ''} ${r.pushName ?? ''} ${r.reaction ?? ''}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      },
+      pick: withoutRaw,
+      limit,
+    });
+    res.json({ results, count: results.length, limit });
+  });
+
   /* ------------------------ cross-group members ------------------- */
 
   /** The combined roster: every member of every group, deduplicated. */
@@ -618,6 +705,21 @@ export function createApiRouter({ configStore, bot, queue, pluginManager, stateS
         .some((n) => numberDigits(n) === member.number);
       detail.noTag = (configStore.get().announce?.noTag ?? [])
         .some((n) => numberDigits(n) === member.number);
+      // Where they stand in the links-group check, and what they last wrote.
+      try {
+        const run = runLinksAudit();
+        detail.audit = run.people.find((p) => p.key === member.key
+          || (member.number && p.number === member.number)
+          || (member.id && p.id === member.id)) ?? null;
+      } catch { detail.audit = null; }
+      detail.archive = bot.archive
+        ? bot.archive.search({
+          keep: (r) => r.kind === 'message' && !r.fromMe
+            && ((member.number && numberDigits(r.number) === member.number) || (member.id && r.from === member.id)),
+          pick: withoutRaw,
+          limit: 100,
+        })
+        : [];
       res.json(detail);
     } catch (err) {
       res.status(bot.isConnected() ? 400 : 503).json({ error: err.message });

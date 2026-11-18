@@ -297,6 +297,7 @@ async function enterApp() {
   loadLockdown();
   loadBanned();
   loadMembersRoster();
+  loadArchiveStatus();
   setTimeout(initPortalNav, 120);
   await Promise.all([loadGroups(), loadDiagnostics(), loadQueue(), loadLogs(), loadLogFiles(), loadGroupActivity()]);
   connectEvents();
@@ -2462,6 +2463,9 @@ window.openMember = async (key) => {
         <h4 style="margin:14px 0 4px">How they joined / left</h4>
         ${timeline}
 
+        ${memberAuditHtml(d.audit)}
+        ${memberMessagesHtml(d.archive)}
+
         <div class="row gap wrap" style="margin-top:14px">
           <button class="btn tiny" onclick="useMemberNumber('${esc(d.number || '')}')">Use this number below ↓</button>
         </div>
@@ -2470,6 +2474,147 @@ window.openMember = async (key) => {
     box.innerHTML = `<div class="verdict bad">${esc(err.message)}</div>`;
   }
 };
+
+/* ----------------------------- audits ------------------------------ */
+const LINKS_TIER_LABEL = {
+  clear: 'Clear',
+  likely: 'Likely',
+  weak: 'Weak',
+  member: 'Only a member',
+};
+const LINKS_TIER_HINT = {
+  clear: 'asked for files in the links group too',
+  likely: 'wrote there two or more times',
+  weak: 'wrote there once',
+  member: 'never wrote there',
+};
+let LINKS_RUN = null;
+
+function renderLinksGroups(r) {
+  const chosen = new Set(r.configured ? r.chosen : []);
+  const auto = new Set(r.configured ? [] : r.chosen);
+  $('la-groups').innerHTML = (r.groups || []).length
+    ? r.groups.map((g) => `<label class="check"><input type="checkbox" class="la-g" value="${esc(g.jid)}"${chosen.has(g.jid) ? ' checked' : ''}> ${esc(g.subject)}${auto.has(g.jid) ? ' <span class="pill">picked by name</span>' : ''}</label>`).join('')
+    : '<div class="empty">No groups loaded.</div>';
+}
+
+function renderLinksRun(r) {
+  const s = r.summary || {};
+  $('la-summary').innerHTML = r.chosen.length
+    ? ['clear', 'likely', 'weak', 'member'].map((t) => `<span class="pill" title="${esc(LINKS_TIER_HINT[t])}">${esc(LINKS_TIER_LABEL[t])}: ${s[t] || 0}</span>`).join('')
+    : '<div class="verdict warn">No links group found. Tick one above and save.</div>';
+  $('la-list').innerHTML = r.people.length
+    ? r.people.map((p, i) => `
+      <details class="item">
+        <summary><span class="pill ${p.tier === 'clear' ? 'bad' : p.tier === 'member' ? '' : 'warn'}">${esc(LINKS_TIER_LABEL[p.tier])}</span>
+          <b>${esc(fmtNumber(p.number) || p.id || '')}</b> <span class="muted">${p.files} file${p.files === 1 ? '' : 's'}, ${p.linksMessages} message${p.linksMessages === 1 ? '' : 's'} in the links group</span></summary>
+        <div class="item-sub">${esc(p.why)}</div>
+        <div class="item-sub muted">In: ${esc(p.groups.map((g) => g.subject).join(', '))}</div>
+        <div class="row gap" style="margin-top:6px"><button class="btn tiny" onclick="openLinksMember(${i})">Open member card</button></div>
+      </details>`).join('')
+    : (r.chosen.length ? '<div class="empty">Nobody in the links group has had files sent elsewhere.</div>' : '');
+}
+
+async function runLinks() {
+  $('la-list').innerHTML = '<div class="empty">Working…</div>';
+  try {
+    LINKS_RUN = await api('GET', '/audits/links');
+    renderLinksGroups(LINKS_RUN);
+    renderLinksRun(LINKS_RUN);
+  } catch (err) {
+    $('la-list').innerHTML = `<div class="verdict bad">${esc(err.message)}</div>`;
+  }
+}
+
+window.openLinksMember = (i) => {
+  const p = LINKS_RUN?.people?.[i];
+  if (!p) return;
+  goTab('members');
+  openMember(p.key);
+};
+
+$('la-run').addEventListener('click', runLinks);
+$('la-save').addEventListener('click', async () => {
+  const groups = [...document.querySelectorAll('.la-g:checked')].map((c) => c.value);
+  try {
+    await api('PUT', '/audits/links/groups', { groups });
+    toast(groups.length ? `${groups.length} links group${groups.length === 1 ? '' : 's'} saved` : 'Cleared, groups are picked by name');
+    runLinks();
+  } catch (err) { toast(err.message, true); }
+});
+
+async function loadArchiveStatus() {
+  try {
+    const r = await api('GET', '/archive/status');
+    const a = r.archive;
+    const b = r.backup;
+    const lines = [];
+    if (a) {
+      lines.push(`<div class="item-sub"><b>On this machine:</b> ${a.files} hour file${a.files === 1 ? '' : 's'}, ${esc(fmtBytes(a.bytes))}${a.oldest ? `, from ${esc(a.oldest)} to ${esc(a.newest)} UTC` : ''}. ${a.written} record${a.written === 1 ? '' : 's'} written since start${a.errors ? `, <span class="pill bad">${a.errors} failed</span>` : ''}.</div>`);
+    } else {
+      lines.push('<div class="item-sub muted">The archive is not running.</div>');
+    }
+    if (b) {
+      if (!b.enabled) {
+        lines.push('<div class="verdict bad">Not backed up: BACKUP_PASSPHRASE is missing from .env, so the archive stays on this machine only.</div>');
+      } else {
+        lines.push(`<div class="item-sub"><b>Backup:</b> ${b.onBranch} hour${b.onBranch === 1 ? '' : 's'} on the <code>${esc(b.branch)}</code> branch${b.pending ? `, ${b.pending} waiting` : ''}. Last good push ${esc(b.lastOkAt ? fmtDateTime(b.lastOkAt) : 'never')}${b.nextRunAt ? `, next ${esc(fmtDateTime(b.nextRunAt))}` : ''}.</div>`);
+        if (b.lastError) lines.push(`<div class="verdict bad">${esc(b.lastError)}</div>`);
+      }
+    }
+    $('ar-status').innerHTML = lines.join('');
+  } catch (err) {
+    $('ar-status').innerHTML = `<div class="verdict bad">${esc(err.message)}</div>`;
+  }
+}
+
+function archiveLine(r) {
+  const names = Object.fromEntries((GROUPS || []).map((g) => [g.jid, g.subject]));
+  const where = r.chat ? (names[r.chat] || (r.chat.endsWith('@g.us') ? 'a group' : 'direct message')) : '';
+  const who = fmtNumber(r.number) || r.pushName || r.from || '';
+  let what = '';
+  if (r.kind === 'message') what = r.mode === 'r' ? `reacted ${r.reaction || ''}` : r.mode === 'e' ? `edited to: ${r.edit || ''}` : (r.text || `[${r.type || 'message'}]`);
+  else if (r.kind === 'deleted') what = 'deleted a message';
+  else if (r.kind === 'bot') what = `bot ${r.op}${r.ok ? '' : ' (failed)'}: ${r.text || ''}`;
+  else if (r.kind === 'group-event') what = `${r.action || 'group event'} in ${r.groupName || ''}`;
+  else if (r.kind === 'snapshot') what = `snapshot of ${r.name}`;
+  else if (r.kind === 'request') what = `request ${r.store}/${r.rowId} is now ${r.row?.status || 'changed'}`;
+  else what = r.kind;
+  return `<div class="item-sub">${esc(fmtDateTime(r.at || r.ts))} · <span class="muted">${esc(where)}</span> ${esc(who)} — ${esc(what)}</div>`;
+}
+
+$('ar-search').addEventListener('click', async () => {
+  const qs = new URLSearchParams();
+  if ($('ar-q').value.trim()) qs.set('q', $('ar-q').value.trim());
+  if ($('ar-who').value.trim()) qs.set('who', $('ar-who').value.trim());
+  if ($('ar-kind').value) qs.set('kind', $('ar-kind').value);
+  $('ar-results').innerHTML = '<div class="empty">Searching…</div>';
+  try {
+    const r = await api('GET', `/archive/search?${qs}`);
+    $('ar-results').innerHTML = r.results.length
+      ? r.results.map(archiveLine).join('') + (r.count >= r.limit ? `<div class="item-sub muted">Showing the newest ${r.limit}. Narrow the search to see older ones.</div>` : '')
+      : '<div class="empty">Nothing matches.</div>';
+  } catch (err) {
+    $('ar-results').innerHTML = `<div class="verdict bad">${esc(err.message)}</div>`;
+  }
+});
+
+/** The links-group check for one member, when they appear in it. */
+function memberAuditHtml(a) {
+  if (!a) return '';
+  return `<h4 style="margin:14px 0 4px">Links group: also taking files</h4>
+    <div class="item-sub"><span class="pill ${a.tier === 'clear' ? 'bad' : a.tier === 'member' ? '' : 'warn'}">${esc(LINKS_TIER_LABEL[a.tier] || a.tier)}</span> ${esc(a.why)}</div>
+    <div class="item-sub muted">This is a list, not a verdict. There can be an innocent reason for any of it.</div>`;
+}
+
+/** The latest messages the archive holds from this member. */
+function memberMessagesHtml(list) {
+  if (!Array.isArray(list)) return '';
+  const names = Object.fromEntries((GROUPS || []).map((g) => [g.jid, g.subject]));
+  const rows = list.map((m) => `<div class="item-sub">${esc(fmtDateTime(m.at || m.ts))} · <span class="muted">${esc(names[m.chat] || (m.chat && m.chat.endsWith('@g.us') ? 'a group' : 'direct message'))}</span> — ${m.mode === 'r' ? `reacted ${esc(m.reaction || '')}` : m.mode === 'e' ? `edited to: ${esc(m.edit || '')}` : esc(m.text || `[${m.type || 'message'}]`)}</div>`).join('');
+  return `<h4 style="margin:14px 0 4px">Recent messages <span class="muted small">${list.length} most recent from the data archive</span></h4>
+    ${rows || '<div class="item-sub muted">Nothing archived from them yet.</div>'}`;
+}
 
 window.closeMember = () => { $('mr-detail').classList.add('hidden'); $('mr-detail').innerHTML = ''; };
 window.useMemberNumber = (n) => {

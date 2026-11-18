@@ -85,6 +85,7 @@
     <button class="tab" data-tab="settings">Settings</button>
     <button class="tab" data-tab="groups">Groups</button>
     <button class="tab" data-tab="members">Members</button>
+    <button class="tab" data-tab="audits">Audits</button>
     <button class="tab superadmin-only hidden" data-tab="admins">Admins</button>
     <button class="tab" data-tab="logs">Logs</button>
   </nav>
@@ -568,6 +569,50 @@ npm start</pre>
     </section>
 
     <!-- ---------- ADMINS (super-admin) ---------- -->
+    <!-- ---------- AUDITS ---------- -->
+    <section class="panel" id="tab-audits">
+      <div class="card" id="card-links">
+        <h2>Links group: also taking files</h2>
+        <p class="hint">People who are in a direct download links group and who also had files sent to them
+        somewhere else. This only lists them, it never does anything to anyone. Every reason shown can be
+        innocent — someone may have joined the links group once and never opened it — so read the reason
+        and decide for yourself.</p>
+        <label>Links groups <span class="hint">none ticked = any group whose name contains "direct download links"</span></label>
+        <div id="la-groups" class="list" style="max-height:220px;overflow:auto"><div class="empty">Connect WhatsApp to load groups.</div></div>
+        <div class="row gap wrap" style="margin:10px 0">
+          <button class="btn small" id="la-save">Save groups</button>
+          <button class="btn small primary" id="la-run">Run</button>
+        </div>
+        <div id="la-summary" class="row gap wrap"></div>
+        <div id="la-list" class="list" style="margin-top:10px"></div>
+      </div>
+
+      <div class="card" id="card-archive">
+        <h2>Data collected</h2>
+        <p class="hint">Everything the bot sees is kept in an archive on this machine: group and direct messages,
+        deleted messages, what the bot itself sent, joins and leaves, and regular snapshots of the member lists.
+        Each finished hour is sealed with your BACKUP_PASSPHRASE and copied to the <code>data-archive</code>
+        branch of this install's git repository, so it survives losing this machine.</p>
+        <div id="ar-status" class="list"><div class="empty">Loading…</div></div>
+        <h3>Search</h3>
+        <div class="row gap wrap">
+          <input id="ar-q" class="flex1" placeholder="words in the message">
+          <input id="ar-who" placeholder="+number" style="width:160px" autocomplete="off">
+          <select id="ar-kind">
+            <option value="">everything</option>
+            <option value="message">messages</option>
+            <option value="deleted">deleted</option>
+            <option value="bot">sent by the bot</option>
+            <option value="group-event">joins and leaves</option>
+            <option value="request">requests</option>
+            <option value="snapshot">snapshots</option>
+          </select>
+          <button class="btn small primary" id="ar-search">Search</button>
+        </div>
+        <div id="ar-results" class="list" style="margin-top:10px"></div>
+      </div>
+    </section>
+
     <section class="panel" id="tab-admins">
       <div class="card" id="card-admins">
         <h2>Admin accounts <span class="hint">super-admin only</span></h2>

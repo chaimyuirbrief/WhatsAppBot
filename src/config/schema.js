@@ -122,6 +122,13 @@ export const DEFAULT_CONFIG = {
     maxLength: 50,
   },
 
+  // Read-only checks an admin runs from the panel's Audits tab.
+  audits: {
+    // The "direct download links" groups. Empty = any group whose name
+    // contains "direct download links".
+    linksGroups: [],                // [groupJid]
+  },
+
   // Scheduled lockdown: lock all groups (admins-only messaging) during one or
   // more recurring weekly windows, evaluated in `timezone`.
   lockdown: {

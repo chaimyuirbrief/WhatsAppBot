@@ -18,6 +18,8 @@ import { MessageIndex } from './core/message-index.js';
 import { MemberActivity } from './core/member-activity.js';
 import { Announcer, EVENT_KEYS, describeEvent } from './core/announce.js';
 import { fmtNumber } from './util/format.js';
+import { DataArchive } from './core/data-archive.js';
+import { DataArchiveBackup } from './core/data-archive-backup.js';
 
 const logger = log.scope('main');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -98,6 +100,10 @@ async function main() {
   bot.messageIndex = new MessageIndex({ store: stateStore.namespace('msg-index') });
   // Per-member activity counts powering the Members roster.
   bot.memberActivity = new MemberActivity({ store: stateStore.namespace('member-activity') });
+  // Everything the bot sees, kept in data/archive, and sealed hour by hour
+  // onto the `data-archive` branch of this checkout's git remote.
+  bot.archive = new DataArchive({ dataDir: DATA_DIR });
+  bot.archiveBackup = new DataArchiveBackup({ archive: bot.archive, dataDir: DATA_DIR, appRoot: ROOT });
   // Optional running commentary of group admin activity in one nominated group.
   const announcer = new Announcer({ bot, getConfig: () => configStore.get().announce });
 
@@ -112,6 +118,7 @@ async function main() {
   const activity = stateStore.namespace('group-activity');
   bot.on('group-event', (ev) => {
     activity.push('events', ev, 500);
+    bot.archive.recordGroupEvent(ev);
     const who = fmtNumber(ev.actorNumber) || (ev.actor ?? 'someone');
     const tgt = ev.targets?.map((t) => fmtNumber(t.number) || t.jid).filter(Boolean).join(', ');
     logger.info(`👥 ${ev.groupName}: ${ev.action}${tgt ? ` ${tgt}` : ''}${ev.actor ? ` (by ${who})` : ''}`);
@@ -183,6 +190,27 @@ async function main() {
     },
   });
 
+  // The archive routine. Request stores are whatever plugins expose as
+  // bot.requestStores ([{ name, rows() }]); none is required.
+  const groupsSnapshot = () => (bot.groupCache?.size ? bot.groupsWithMembers() : undefined);
+  const descSnapshot = () => (bot.groupCache?.size ? bot.groupDescriptionsSnapshot() : undefined);
+  bot.archive.start({
+    requestStores: bot.requestStores ?? [],
+    snapshots: {
+      rosters: groupsSnapshot,
+      descriptions: descSnapshot,
+      'member-activity': () => bot.memberActivity.all(),
+      ...(bot.archiveSnapshots ?? {}),
+    },
+    seed: {
+      'member-activity': () => bot.memberActivity.all(),
+      'group-activity': () => activity.get('events', []),
+      'msg-index': () => bot.messageIndex.entries,
+      audit: () => stateStore.namespace('audit').get('events', []),
+    },
+  });
+  bot.archiveBackup.start();
+
   const app = createServer({ configStore, bot, queue, pluginManager, stateStore, fileLogger, alerts, lockScheduler, dataDir: DATA_DIR, appRoot: ROOT });
   await startServer(app, configStore);
   bot.on('state', (st) => {
@@ -243,6 +271,7 @@ async function main() {
   const shutdown = async (signal) => {
     logger.info(`${signal} received, shutting down`);
     try { await pluginManager.unloadAll(); } catch {}
+    try { bot.archiveBackup.stop(); bot.archive.stop(); } catch {}
     try { await bot.stop(); } catch {}
     stateStore.flush();
     fileLogger.close();

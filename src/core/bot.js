@@ -145,8 +145,34 @@ export class WhatsAppBot extends EventEmitter {
   set sock(raw) {
     this._rawSock = raw ?? null;
     this._sock = raw
-      ? pacedSocket(raw, (kind) => this._holdOff(this._actionGapMs(kind)))
+      ? this._recordingSocket(pacedSocket(raw, (kind) => this._holdOff(this._actionGapMs(kind))))
       : raw;
+  }
+
+  /**
+   * Every sendMessage - a message, a reaction, an edit, a delete - goes into
+   * the data archive (this.archive, when one is attached), including the ones
+   * that fail. Sits outside the pacing, so it records when the call actually
+   * happened, and never changes what the call returns or throws.
+   */
+  _recordingSocket(sock) {
+    const bot = this;
+    return new Proxy(sock, {
+      get(target, prop, receiver) {
+        const v = Reflect.get(target, prop, receiver);
+        if (prop !== 'sendMessage' || typeof v !== 'function') return v;
+        return async function sendMessage(jid, content, ...rest) {
+          try {
+            const result = await v.call(target, jid, content, ...rest);
+            try { bot.archive?.recordBot({ jid, content, result }); } catch { /* never block a send */ }
+            return result;
+          } catch (error) {
+            try { bot.archive?.recordBot({ jid, content, error }); } catch { /* never block a send */ }
+            throw error;
+          }
+        };
+      },
+    });
   }
 
   _setState(state, extra = {}) {
@@ -322,7 +348,13 @@ export class WhatsAppBot extends EventEmitter {
     });
 
     this.sock.ev.on('messages.upsert', async ({ messages, type }) => {
-      if (type !== 'notify') return;   // ignore history backfill
+      // Archive first, before the 'notify' filter: the reconnect backfill
+      // ('append') carries messages sent while the bot was offline, and those
+      // belong in the record as much as live ones do.
+      try {
+        this.archive?.recordMessages(messages, { source: type === 'notify' ? 'live' : 'backfill', normalize: (r) => this.normalize(r) });
+      } catch (err) { logger.debug(`archive: ${err.message}`); }
+      if (type !== 'notify') return;   // plugins only see live messages
       for (const raw of messages) {
         // Ground truth for group mentions: WhatsApp gives us no documentation
         // of the in-text token it links against, and Baileys has no first-class
@@ -338,6 +370,14 @@ export class WhatsAppBot extends EventEmitter {
         const msg = this.normalize(raw);
         if (msg) this.emit('message', msg);
       }
+    });
+
+    // History sync: older messages WhatsApp hands over after linking. Never
+    // dispatched to plugins (nobody wants replies to last month), only archived.
+    this.sock.ev.on('messaging-history.set', ({ messages } = {}) => {
+      try {
+        this.archive?.recordMessages(messages, { source: 'history', normalize: (r) => this.normalize(r) });
+      } catch (err) { logger.debug(`archive: ${err.message}`); }
     });
 
     // These fire often - every subject change, every participant edit.
